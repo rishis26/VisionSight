@@ -8,10 +8,12 @@ import time
 from collections import deque
 
 class FaceVerifier:
-    def __init__(self, encodings_path="assets/known_faces/encodings.pkl", video_source=0, on_lock=None, on_unlock=None):
+    def __init__(self, encodings_path="assets/known_faces/encodings.pkl", video_source=0, on_lock=None, on_unlock=None, headless=False):
         print("Initializing Advanced Identity Verification Engine...")
         
-        # Architecture Callbacks
+        # Architecture Settings
+        self.video_source = video_source
+        self.headless = headless
         self.on_lock = on_lock
         self.on_unlock = on_unlock
         
@@ -27,7 +29,7 @@ class FaceVerifier:
             raise Exception("Error: Could not open video source.")
 
         # 3. Sensitivity & State Settings (High Accuracy Mode)
-        self.TOLERANCE = 0.42        # Strict tolerance (Default was 0.6, 0.42 is highly secure)
+        self.TOLERANCE = 0.45        # Relaxed slightly from 0.42 for stability in changing light
         self.EYE_AR_THRESH = 0.25    # EAR threshold for blinks (increased for fast blinks)
         self.EAR_BUFFER_SIZE = 3     # Reduced for faster reactivity
         self.ear_history = deque(maxlen=self.EAR_BUFFER_SIZE)
@@ -41,6 +43,10 @@ class FaceVerifier:
         self.blink_at_verify = 0
         self.auth_name = None
         self.last_blink_time = 0
+        
+        # Debounce State
+        self.frames_absent = 0
+        self.frames_unauthorized = 0
 
         print(f"System Ready. Recognition Tolerance: {self.TOLERANCE}")
 
@@ -69,7 +75,14 @@ class FaceVerifier:
 
         while True:
             ret, frame = self.cap.read()
-            if not ret: break
+            if not ret: 
+                # macOS cuts power to the webcam when it sleeps/locks!
+                # If we get disconnected, we must patiently wait to reconnect rather than killing the script.
+                print("⚠️ System Sleep/Webcam Disconnect detected! Waiting for wake...")
+                self.cap.release()
+                time.sleep(2)  # Wait 2 seconds before checking if system is awake
+                self.cap = cv2.VideoCapture(self.video_source)
+                continue
 
             # --- Mirror & Preprocessing ---
             frame = cv2.flip(frame, 1)
@@ -79,9 +92,43 @@ class FaceVerifier:
             small_frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
             rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
 
-            # 1. Find Face Bounding Boxes on the SMALL frame (Lighting fast)
+            # 1. Find Face Bounding Boxes on the SMALL frame (Lightning fast)
             small_face_locations = face_recognition.face_locations(rgb_small_frame, model="hog")
-            
+
+            # ─────────────────────────────────────────────────────────────────
+            # EARLY-EXIT: If the cheap HOG pass finds zero faces (e.g. covered
+            # camera, pitch-black frame), skip ALL expensive full-frame work and
+            # go straight to the security trigger logic.  This drops a "covered
+            # camera" frame from ~1 000 ms → < 5 ms.
+            # ─────────────────────────────────────────────────────────────────
+            if not small_face_locations:
+                auth_user_present      = False
+                unauthorized_user_present = False
+
+                # Security Trigger A — authenticated user just vanished
+                if self.is_authenticated:
+                    self.frames_absent += 1
+                    print(f"[DEBUG] Face missing! Absence count: {self.frames_absent}")
+                    if self.frames_absent >= 1:   # INSTANT LOCK
+                        print("Authorized user left. Resetting authentication...")
+                        self.is_authenticated = False
+                        self.auth_name        = None
+                        if self.on_lock:
+                            self.on_lock(reason="Authorized user stepped away")
+                else:
+                    self.frames_absent = 0
+
+                # Render the raw frame with no annotations so the window stays alive
+                if not self.headless:
+                    cv2.imshow('VisionSight - Secure Biometric Session', frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                else:
+                    time.sleep(0.01)   # yield CPU; no face means no urgent work
+
+                continue   # ← skip the rest of the loop body entirely
+            # ─────────────────────────────────────────────────────────────────
+
             # Pre-scale coordinate locations back to 1.0x size
             face_locations = []
             for (top, right, bottom, left) in small_face_locations:
@@ -99,13 +146,12 @@ class FaceVerifier:
 
             # 2. Process each face found
             for (top, right, bottom, left), landmarks, encoding in zip(face_locations, face_landmarks_list, face_encodings):
-                # We are using the full frame now, so no need to scale coordinates up
-                # top *= 2; right *= 2; bottom *= 2; left *= 2
 
                 # --- 2a. Identity Matching ---
                 name = "Unknown"
                 color = (0, 0, 255) # Red for Unknown
                 match_distance = 1.0
+                status_text = "UNKNOWN"
 
                 if self.known_encodings:
                     face_distances = face_recognition.face_distance(self.known_encodings, encoding)
@@ -148,18 +194,10 @@ class FaceVerifier:
                 if not eye_closed and self.eye_closed_last_frame:
                     self.blink_count += 1
                     current_time = time.time()
-                    time_since_last_blink = current_time - self.last_blink_time
                     self.last_blink_time = current_time
 
-                    # 1. Check for Double-Blink (Lock Gesture)
-                    if self.is_authenticated and time_since_last_blink < 0.8:
-                        print("Double-Blink Gesture Detected! Re-locking session...")
-                        self.is_authenticated = False
-                        self.auth_name = None
-                        if self.on_lock: self.on_lock(reason="Double-Blink Gesture")
-
-                    # 2. Check if this blink completes the challenge
-                    elif auth_user_present and not self.is_authenticated:
+                    # Check if this blink completes the challenge
+                    if auth_user_present and not self.is_authenticated:
                         if self.blink_count > self.blink_at_verify:
                             print(f"Liveness Challenge Passed! Authenticated as {name}.")
                             self.is_authenticated = True
@@ -171,14 +209,13 @@ class FaceVerifier:
                 cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
                 
                 # Top Status (Action Required)
-                cv2.putText(frame, status_text if name != "Unknown" else "UNKNOWN", 
+                cv2.putText(frame, status_text, 
                             (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
                 # Bottom Identity Label & Confidence Score
                 cv2.rectangle(frame, (left, bottom - 35), (right, bottom), color, cv2.FILLED)
                 
                 # Convert raw math L1/L2 distance to a "Confidence Score"
-                # A distance of 0.4 is incredibly accurate in AI, so we map it to ~80%
                 confidence_score = 1.0 - (match_distance / 2.0)  
                 
                 cv2.putText(frame, f"{name.title()} ({confidence_score:.1%})", (left + 6, bottom - 6), 
@@ -191,21 +228,33 @@ class FaceVerifier:
             # 3. Security Triggers for Lock Controller
             # Rule A: Authorized user stepped away
             if not auth_user_present and self.is_authenticated:
-                print("Authorized user left. Resetting authentication...")
-                self.is_authenticated = False
-                self.auth_name = None
-                if self.on_lock: self.on_lock(reason="Authorized user stepped away")
+                self.frames_absent += 1
+                print(f"[DEBUG] Face missing! Absence count: {self.frames_absent}")
+                if self.frames_absent >= 1:  # INSTANT LOCK
+                    print("Authorized user left. Resetting authentication...")
+                    self.is_authenticated = False
+                    self.auth_name = None
+                    if self.on_lock: self.on_lock(reason="Authorized user stepped away")
+            else:
+                if auth_user_present:
+                    self.frames_absent = 0
 
-            # Rule B: Unauthorized face detected while not authenticated
+            # Rule B: Unauthorized face detected
             if unauthorized_user_present and not auth_user_present:
-               # Trigger lockdown if an unknown face is on camera
-               if self.on_lock: self.on_lock(reason="Unauthorized entity detected")
+               self.frames_unauthorized += 1
+               if self.frames_unauthorized > 5: # Require (~0.5 seconds) of consecutive intruder detection
+                   self.frames_unauthorized = 0  # Reset so it doesn't spam infinitely before cooldown engages
+                   if self.on_lock: self.on_lock(reason="Unauthorized entity detected")
+            else:
+               self.frames_unauthorized = 0
 
-            # 4. Render Session
-            cv2.imshow('VisionSight - Secure Biometric Session', frame)
-
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            # 4. Render Session (Only if not in Headless Mode)
+            if not self.headless:
+                cv2.imshow('VisionSight - Secure Biometric Session', frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+            else:
+                time.sleep(0.1)
 
         self.cap.release()
         cv2.destroyAllWindows()
