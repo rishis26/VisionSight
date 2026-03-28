@@ -1,7 +1,27 @@
+# Python
 __pycache__/
-.env
-*.pyc
-venv/
+*.py[cod]
+*$py.class
+*.so
+.Python
 env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.venv
+pip-wheel-metadata/
 
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+# Logs and databases
+logs/*.log
+*.sqlite3
+
+# Project specific
+assets/known_faces/*.enc
+.env
 phase_file/
