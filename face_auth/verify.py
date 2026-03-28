@@ -105,19 +105,6 @@ class FaceVerifier:
                 auth_user_present      = False
                 unauthorized_user_present = False
 
-                # Security Trigger A — authenticated user just vanished
-                if self.is_authenticated:
-                    self.frames_absent += 1
-                    print(f"[DEBUG] Face missing! Absence count: {self.frames_absent}")
-                    if self.frames_absent >= 1:   # INSTANT LOCK
-                        print("Authorized user left. Resetting authentication...")
-                        self.is_authenticated = False
-                        self.auth_name        = None
-                        if self.on_lock:
-                            self.on_lock(reason="Authorized user stepped away")
-                else:
-                    self.frames_absent = 0
-
                 # Render the raw frame with no annotations so the window stays alive
                 if not self.headless:
                     cv2.imshow('VisionSight - Secure Biometric Session', frame)
@@ -226,20 +213,7 @@ class FaceVerifier:
                     cv2.circle(frame, (p[0], p[1]), 2, (255, 255, 0), -1)
 
             # 3. Security Triggers for Lock Controller
-            # Rule A: Authorized user stepped away
-            if not auth_user_present and self.is_authenticated:
-                self.frames_absent += 1
-                print(f"[DEBUG] Face missing! Absence count: {self.frames_absent}")
-                if self.frames_absent >= 1:  # INSTANT LOCK
-                    print("Authorized user left. Resetting authentication...")
-                    self.is_authenticated = False
-                    self.auth_name = None
-                    if self.on_lock: self.on_lock(reason="Authorized user stepped away")
-            else:
-                if auth_user_present:
-                    self.frames_absent = 0
-
-            # Rule B: Unauthorized face detected
+            # Rule B: Unauthorized face detected (Intruder)
             if unauthorized_user_present and not auth_user_present:
                self.frames_unauthorized += 1
                if self.frames_unauthorized > 5: # Require (~0.5 seconds) of consecutive intruder detection
