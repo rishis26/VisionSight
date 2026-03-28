@@ -23,11 +23,6 @@ class FaceVerifier:
         self.known_encodings = []
         self.load_known_faces()
 
-        # 2. Setup Webcam
-        self.cap = cv2.VideoCapture(video_source)
-        if not self.cap.isOpened():
-            raise Exception("Error: Could not open video source.")
-
         # 3. Sensitivity & State Settings (High Accuracy Mode)
         self.TOLERANCE = 0.45        # Relaxed slightly from 0.42 for stability in changing light
         self.EYE_AR_THRESH = 0.25    # EAR threshold for blinks (increased for fast blinks)
@@ -49,6 +44,10 @@ class FaceVerifier:
         self.frames_unauthorized = 0
 
         print(f"System Ready. Recognition Tolerance: {self.TOLERANCE}")
+        
+        # NOTE: We no longer auto-boot the camera in __init__.
+        # The camera will ONLY activate inside authenticate_once().
+        self.cap = None
 
     def load_known_faces(self):
         """Loads the biometric signatures from the serialized pickle file."""
@@ -69,20 +68,39 @@ class FaceVerifier:
         C = math.dist(eye[0], eye[3])
         return (A + B) / (2.0 * C)
 
-    def run(self):
-        """Main recognition loop with Liveness Challenge."""
-        print("Starting Secure Biometric Session... Press 'q' to logout.")
+    def authenticate_once(self, system_controller):
+        """
+        Event-driven single-use authentication pipeline.
+        Bootstraps the webcam, scans for a verified identity, injects the payload, and completely shuts down.
+        """
+        print("🟢 CAMERA WARMUP: Booting webcam session...")
+        self.cap = cv2.VideoCapture(self.video_source)
+        
+        # Give hardware 500ms to properly adjust exposure
+        time.sleep(0.5)
+        
+        if not self.cap.isOpened():
+            print("⚠️ Error: Could not open webcam.")
+            return
+
+        print("👁️‍🗨️ SCANNING: Waiting for authorized face...")
+        
+        self.is_authenticated = False
+        self.auth_name = None
+        self.frames_absent = 0
+        self.frames_unauthorized = 0
 
         while True:
+            # 1. Check if the screen went back to sleep or the user manually bypassed the lock.
+            # If so, we abort the camera attempt to save battery.
+            if not system_controller._is_display_on() or not system_controller._is_macos_locked():
+                print("🛑 ABORT: Mac screen turned off or unlock was bypassed manually. Shutting down camera.")
+                break
+
             ret, frame = self.cap.read()
             if not ret: 
-                # macOS cuts power to the webcam when it sleeps/locks!
-                # If we get disconnected, we must patiently wait to reconnect rather than killing the script.
-                print("⚠️ System Sleep/Webcam Disconnect detected! Waiting for wake...")
-                self.cap.release()
-                time.sleep(2)  # Wait 2 seconds before checking if system is awake
-                self.cap = cv2.VideoCapture(self.video_source)
-                continue
+                print("⚠️ System Sleep/Webcam Disconnect detected! Aborting scan...")
+                break
 
             # --- Mirror & Preprocessing ---
             frame = cv2.flip(frame, 1)
@@ -188,7 +206,10 @@ class FaceVerifier:
                         if self.blink_count > self.blink_at_verify:
                             print(f"Liveness Challenge Passed! Authenticated as {name}.")
                             self.is_authenticated = True
-                            if self.on_unlock: self.on_unlock(user_name=name)
+                            system_controller.simulate_unlock(name)
+                            self.cap.release()
+                            cv2.destroyAllWindows()
+                            return
                 
                 self.eye_closed_last_frame = eye_closed
 
@@ -235,5 +256,6 @@ class FaceVerifier:
         print(f"Session Terminated. Final Blink Count: {self.blink_count}")
 
 if __name__ == "__main__":
+    from system.lock import SystemController
     verifier = FaceVerifier()
-    verifier.run()
+    verifier.authenticate_once(SystemController())

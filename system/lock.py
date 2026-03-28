@@ -1,21 +1,43 @@
 import os
 import subprocess
 import time
-from dotenv import load_dotenv
-
-# Load secure environment variables
-load_dotenv()
-MAC_PASSWORD = os.getenv("MAC_PASSWORD")
-
-if not MAC_PASSWORD:
-    print("⚠️ WARNING: MAC_PASSWORD not found in .env file! True Face ID Auto-Typer is disabled.")
-
 
 class SystemController:
     def __init__(self):
         self.last_lock_time = 0
-        self.LOCK_COOLDOWN = 10  # Minimum seconds between lock commands to prevent spamming
+        self.LOCK_COOLDOWN = 0  # Cooldown completely removed so you can unlock infinitely without waiting
         self.last_unlock_time = 0
+
+    def _get_secure_password(self):
+        """
+        Dynamically extracts the user's password from Apple's highly-encrypted local Keychain securely at runtime.
+        """
+        try:
+            output = subprocess.check_output(
+                ['security', 'find-generic-password', '-a', os.getlogin(), '-s', 'VisionSightDaemon', '-w'], 
+                text=True
+            ).strip()
+            return output
+        except subprocess.CalledProcessError:
+            print("⚠️ ERROR: Password not found in Keychain! Have you run the 'security add-generic-password' setup command?")
+            return None
+
+    def _is_display_on(self):
+        """
+        Queries the macOS Display hardware kernel directly to check if the backlight is powered on.
+        If CurrentPowerState is 1, 2, or 3, the display is asleep/blank. If 4, the screen is brightly awake.
+        Silently falls back to True for newer Apple Silicon Macs that use a different registry key.
+        """
+        try:
+            # check_output throws an exception if grep returns 1 (no match found).
+            # subprocess.run with capture_output is safer here so we don't spam the console.
+            result = subprocess.run('ioreg -n IODisplayWrangler | grep -i IOPowerManagement', shell=True, capture_output=True, text=True)
+            output = result.stdout
+            if "CurrentPowerState" in output:
+                return ('"CurrentPowerState"=4' in output) or ('"CurrentPowerState"= 4' in output)
+            return True # Fallback for Apple Silicon architecture
+        except Exception:
+            return True
 
     def _is_macos_locked(self):
         """
@@ -72,11 +94,13 @@ class SystemController:
             try:
                 subprocess.run(["caffeinate", "-u", "-t", "2"], check=True)
                 
-                # The True Face ID Auto-Typer bypass logic
-                if MAC_PASSWORD:
+                # Retrieve exact password from Apple Keychain dynamically
+                mac_password = self._get_secure_password()
+                
+                if mac_password:
                     # Give the physical screen a tiny fraction of a second to power on
                     time.sleep(0.2)
-                    print("🤖 Injecting HIGH SPEED payload to bypass lock screen...")
+                    print("🤖 Injecting HIGH SPEED keychain payload to bypass lock screen...")
 
                     # AppleScript to simulate keyboard events (Requires macOS Accessibility permissions)
                     apple_script = f'''
@@ -86,7 +110,7 @@ class SystemController:
                         delay 0.1
                         
                         # 2. Type the password into the box
-                        keystroke "{MAC_PASSWORD}"
+                        keystroke "{mac_password}"
                         
                         # 3. Press Enter instantly
                         key code 36
