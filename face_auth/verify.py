@@ -167,53 +167,24 @@ class FaceVerifier:
                         name = self.known_names[best_match_index]
                         auth_user_present = True
                         
-                        # --- Liveness Challenge Stage Logic ---
                         if not self.is_authenticated:
-                            # Stage 1: Identity Verified, Waiting for Blink
-                            if self.auth_name != name:
-                                self.auth_name = name
-                                self.blink_at_verify = self.blink_count
+                            print(f"✅ Identity Verified! Authenticated as {name}.")
+                            self.is_authenticated = True
+                            self.auth_name = name
                             
-                            color = (255, 100, 0) # Blue-ish for "Challenge Mode"
-                            status_text = "VERIFIED | BLINK TO UNLOCK"
-                        else:
-                            # Stage 2: Fully Authenticated
-                            color = (0, 255, 0) # Green for Access Granted
-                            status_text = "ACCESS GRANTED"
+                            # Instantly execute payload without waiting for a physical blink
+                            system_controller.simulate_unlock(name)
+                            
+                            self.cap.release()
+                            cv2.destroyAllWindows()
+                            return
                     else:
                         # Distance > Tolerance = Unknown user
                         unauthorized_user_present = True
                 else:
                     unauthorized_user_present = True
                 
-                # --- 2b. Eye Tracking (EAR) ---
-                left_ear = self.calculate_ear(landmarks['left_eye'])
-                right_ear = self.calculate_ear(landmarks['right_eye'])
-                avg_ear = (left_ear + right_ear) / 2.0
-                
-                self.ear_history.append(avg_ear)
-                smoothed_ear = np.mean(self.ear_history)
-                eye_closed = smoothed_ear < self.EYE_AR_THRESH
-
-                # Blink Logic
-                if not eye_closed and self.eye_closed_last_frame:
-                    self.blink_count += 1
-                    current_time = time.time()
-                    self.last_blink_time = current_time
-
-                    # Check if this blink completes the challenge
-                    if auth_user_present and not self.is_authenticated:
-                        if self.blink_count > self.blink_at_verify:
-                            print(f"Liveness Challenge Passed! Authenticated as {name}.")
-                            self.is_authenticated = True
-                            system_controller.simulate_unlock(name)
-                            self.cap.release()
-                            cv2.destroyAllWindows()
-                            return
-                
-                self.eye_closed_last_frame = eye_closed
-
-                # --- 2c. Drawing & HUD ---
+                # --- Drawing & HUD ---
                 cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
                 
                 # Top Status (Action Required)
@@ -253,7 +224,7 @@ class FaceVerifier:
 
         self.cap.release()
         cv2.destroyAllWindows()
-        print(f"Session Terminated. Final Blink Count: {self.blink_count}")
+        print("Session Terminated.")
 
 if __name__ == "__main__":
     from system.lock import SystemController
