@@ -9,13 +9,6 @@ class SystemController:
         self.last_lock_time = 0
         self.LOCK_COOLDOWN = 0
         self.last_unlock_time = 0
-        self.typer_worker = subprocess.Popen(
-            ['osascript', '-i'],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            text=True
-        )
 
     def _get_secure_password(self):
         try:
@@ -88,21 +81,30 @@ class SystemController:
                 subprocess.run(['caffeinate', '-u', '-t', '2'], check=True)
                 mac_password = self._get_secure_password()
                 if mac_password:
-                    fast_commands = (
-                        'tell application "System Events" to key code 49\n'
-                        f'tell application "System Events" to keystroke "{mac_password}"\n'
-                        'tell application "System Events" to key code 36\n'
-                    )
-                    if self.typer_worker.poll() is not None:
-                        self.typer_worker = subprocess.Popen(
-                            ['osascript', '-i'],
-                            stdin=subprocess.PIPE,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            text=True
-                        )
-                    self.typer_worker.stdin.write(fast_commands)
-                    self.typer_worker.stdin.flush()
+                    # Wake screen via Spacebar
+                    space_down = Quartz.CGEventCreateKeyboardEvent(None, 49, True)
+                    Quartz.CGEventPost(Quartz.kCGHIDEventTap, space_down)
+                    space_up = Quartz.CGEventCreateKeyboardEvent(None, 49, False)
+                    Quartz.CGEventPost(Quartz.kCGHIDEventTap, space_up)
+                    
+                    time.sleep(0.15) # Wait a tiny fraction of a second for UI to wake up
+                    
+                    # Instantly type the password using C-level Unicode keyboard events
+                    for char in mac_password:
+                        uni_char = ord(char)
+                        event_down = Quartz.CGEventCreateKeyboardEvent(None, 0, True)
+                        Quartz.CGEventKeyboardSetUnicodeString(event_down, 1, chr(uni_char))
+                        Quartz.CGEventPost(Quartz.kCGSessionEventTap, event_down)
+                        event_up = Quartz.CGEventCreateKeyboardEvent(None, 0, False)
+                        Quartz.CGEventKeyboardSetUnicodeString(event_up, 1, chr(uni_char))
+                        Quartz.CGEventPost(Quartz.kCGSessionEventTap, event_up)
+                        
+                    # Press Enter to login
+                    enter_down = Quartz.CGEventCreateKeyboardEvent(None, 36, True)
+                    Quartz.CGEventPost(Quartz.kCGHIDEventTap, enter_down)
+                    enter_up = Quartz.CGEventCreateKeyboardEvent(None, 36, False)
+                    Quartz.CGEventPost(Quartz.kCGHIDEventTap, enter_up)
+
                     print('Unlock sequence complete!')
             except Exception as e:
                 print(f'Unlock error: {e}')
