@@ -2,7 +2,7 @@ import time
 import threading
 import objc
 from Foundation import NSDistributedNotificationCenter, NSObject
-from AppKit import NSWorkspace, NSWorkspaceScreensDidSleepNotification, NSWorkspaceScreensDidWakeNotification
+from AppKit import NSWorkspace, NSWorkspaceScreensDidSleepNotification, NSWorkspaceScreensDidWakeNotification, NSApplication
 from PyObjCTools import AppHelper
 from system.lock import SystemController
 from face_auth.verify import FaceVerifier
@@ -14,6 +14,7 @@ class OSNotificationListener(NSObject):
             self.system = SystemController()
             self.verifier = FaceVerifier(headless=True)
             self.scan_in_progress = False
+            self.last_scan_end = 0
         return self
 
     def screenLocked_(self, notification):
@@ -33,6 +34,13 @@ class OSNotificationListener(NSObject):
         if self.scan_in_progress:
             return
             
+        # Temporarily reload config just to grab COOLDOWN parameter natively from main thread
+        self.verifier.reload_config()
+        time_since_last = time.time() - self.last_scan_end
+        if time_since_last < self.verifier.COOLDOWN:
+            print(f"⏳ Cooldown active. Please wait {int(self.verifier.COOLDOWN - time_since_last)}s before next scan.")
+            return
+
         self.scan_in_progress = True
         self.verifier._stop_requested = False
         
@@ -40,6 +48,7 @@ class OSNotificationListener(NSObject):
         scan_thread.start()
 
     def _run_scan(self):
+        self.verifier.reload_config()
         result = self.verifier.authenticate_once(self.system)
         
         if result == "success":
@@ -47,6 +56,7 @@ class OSNotificationListener(NSObject):
         elif result in ("rejected", "aborted"):
             print("🛑 Scanner operation cancelled manually.")
             
+        self.last_scan_end = time.time()
         self.scan_in_progress = False
 
     def screenUnlocked_(self, notification):
@@ -62,6 +72,10 @@ class OSNotificationListener(NSObject):
             self.verifier._stop_requested = True
 
 def start_daemon():
+    # Hide the daemon completely from the macOS Dock and Cmd+Tab Menu
+    app = NSApplication.sharedApplication()
+    app.setActivationPolicy_(1)  # 1 = NSApplicationActivationPolicyAccessory
+
     print("==================================================")
     print("🚀 VISIONSIGHT OS SECURITY DAEMON (EVENT-DRIVEN)")
     print("==================================================")

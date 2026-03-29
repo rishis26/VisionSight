@@ -29,10 +29,12 @@ class FaceVerifier:
         self.encodings_path = encodings_path
         self.known_names = []
         self.known_encodings = []
-        self.load_known_faces()
+        
         self.EYE_AR_THRESH = 0.25
         self.EAR_BUFFER_SIZE = 3
         self.ear_history = deque(maxlen=self.EAR_BUFFER_SIZE)
+        
+        self.reload_config()
         
         self.blink_count = 0
         self.eye_closed_last_frame = False
@@ -59,6 +61,25 @@ class FaceVerifier:
             self.known_names = list(data.keys())
             self.known_encodings = list(data.values())
             print(f"Loaded {len(self.known_names)} authorized identity: {self.known_names}")
+
+    def reload_config(self):
+        print("🔄 Hot-reloading configurations from core...")
+        from dotenv import load_dotenv, find_dotenv
+        load_dotenv(find_dotenv(), override=True)
+        
+        self.video_source = int(os.getenv("VISIONSIGHT_CAMERA", 0))
+        self.TOLERANCE = float(os.getenv("VISIONSIGHT_TOLERANCE", 0.55))
+        self.AUTO_UNLOCK = os.getenv("VISIONSIGHT_AUTO_UNLOCK", "true").lower() == "true"
+        
+        self.ACTIVATION_WINDOW = int(os.getenv("VISIONSIGHT_ACTIVATION_WINDOW", 4))
+        self.COOLDOWN = int(os.getenv("VISIONSIGHT_COOLDOWN", 10))
+        self.IDLE_THRESHOLD = int(os.getenv("VISIONSIGHT_IDLE_THRESHOLD", 4))
+        self.FPS_SETTING = os.getenv("VISIONSIGHT_FPS", "Medium")
+        self.RESOLUTION_SETTING = os.getenv("VISIONSIGHT_RESOLUTION", "640x480")
+        
+        self.known_names = []
+        self.known_encodings = []
+        self.load_known_faces()
 
     def calculate_ear(self, eye):
         A = math.dist(eye[1], eye[5])
@@ -90,6 +111,21 @@ class FaceVerifier:
         if not self.cap.isOpened():
             print("⚠️ Error: Could not open webcam.")
             return "failed"
+            
+        # Apply Configuration for Camera Setup
+        if self.RESOLUTION_SETTING == "1280x720":
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        else:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            
+        if self.FPS_SETTING == "Low":
+            self.cap.set(cv2.CAP_PROP_FPS, 5)
+        elif self.FPS_SETTING == "High":
+            self.cap.set(cv2.CAP_PROP_FPS, 15)
+        else:
+            self.cap.set(cv2.CAP_PROP_FPS, 10)
 
         print("👁️‍🗨️ SCANNING: Waiting for authorized face... (Press Esc to stop)")
 
@@ -119,10 +155,15 @@ class FaceVerifier:
             esc_listener = None
 
         last_display_check = time.time()
+        start_time = time.time()
 
         while True:
-            # Check physical hardware display state strictly every 1.0s to catch idle sleep
             current_time = time.time()
+            if current_time - start_time > self.ACTIVATION_WINDOW:
+                print("🛑 Scan aborted: Activation window expired.")
+                self._stop_requested = True
+                
+            # Check physical hardware display state strictly every 1.0s to catch idle sleep
             if current_time - last_display_check >= 1.0:
                 if not system_controller._is_display_on():
                     self._stop_requested = True
@@ -222,8 +263,12 @@ class FaceVerifier:
                             if esc_listener:
                                 esc_listener.stop()
 
-                            # Then unlock
-                            system_controller.simulate_unlock(name)
+                            # Then unlock ONLY if enabled in GUI config
+                            if self.AUTO_UNLOCK:
+                                system_controller.simulate_unlock(name)
+                            else:
+                                print(f"✅ Access granted to {name}, but AUTO UNLOCK is disabled. Awaiting manual password entry.")
+                                
                             return "success"
                     else:
                         unauthorized_user_present = True
