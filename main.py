@@ -7,44 +7,62 @@ def start_daemon():
     print("🚀 VISIONSIGHT OS SECURITY DAEMON (IDLE MODE)")
     print("==================================================")
     
-    # Initialize Core Modules
     system = SystemController()
-    verifier = FaceVerifier(headless=False)
+    verifier = FaceVerifier(headless=True)
     
     print("✅ System Ready. Entering 0% CPU Sleep State...")
 
     while True:
         try:
-            # Sleep aggressively to prevent CPU usage
-            time.sleep(1)
-            
-            # Check Physical State (Issue #4 & Issue #10)
-            is_locked = system._is_macos_locked()
-            is_awake = system._is_display_on()
-            
-            if is_locked and is_awake:
-                print("\n🔔 [EVENT] Lock Screen Detected & Display is ON!")
-                
-                # Check Cooldown to prevent Continuous Lock-Unlock Loop
-                current_time = time.time()
-                if current_time - system.last_unlock_time < system.LOCK_COOLDOWN:
-                    remaining = int(system.LOCK_COOLDOWN - (current_time - system.last_unlock_time))
-                    print(f"⏳ Cooldown Active ({remaining}s remaining). Waiting for you to leave...")
-                    continue
-                
-                # Hand over control to the biometric authenticator
-                verifier.authenticate_once(system)
-                
-                # Once authenticate_once returns, the process either succeeded, failed, or the screen turned off.
-                # It safely returns to the IDLE sleep loop.
-                print("💤 Biometric Session Closed. Returning to IDLE sleep...")
+            time.sleep(0.2)
+
+            # GATE: Only fire if screen is genuinely locked
+            if not system._is_macos_locked():
+                continue
+
+            print("\n🔔 [EVENT] Real Lock Screen confirmed! Starting biometric scan...")
+
+            # Hand over to face scanner — get back a clear result
+            result = verifier.authenticate_once(system)
+
+            # ── RESULT HANDLING ──────────────────────────────────────────────
+
+            if result == "success":
+                # Face matched and unlocked — wait for macOS to fully wake
+                # before polling again to avoid the re-lock loop
+                print("✅ Unlock successful. Cooling down for 5 seconds...")
+                time.sleep(5)
+
+            elif result == "rejected":
+                # User pressed Esc — they want to type password manually
+                # Wait here doing nothing until they successfully unlock themselves
+                print("⌨️  Manual unlock mode. Waiting for user to type password...")
+                while system._is_macos_locked():
+                    time.sleep(0.5)
+                # Screen is now unlocked — give it a moment to settle
+                print("✅ Manual unlock detected. Resuming daemon...")
+                time.sleep(3)
+
+            elif result == "aborted":
+                # Screen unlocked by some other means mid-scan
+                # Just give it a moment and go back to polling
+                print("↩️  Scan aborted. Resuming idle...")
+                time.sleep(2)
+
+            elif result == "failed":
+                # Camera error — wait a bit before retrying
+                print("⚠️  Camera failed. Retrying in 5 seconds...")
+                time.sleep(5)
+
+            # ─────────────────────────────────────────────────────────────────
+            print("💤 Returning to IDLE...")
 
         except KeyboardInterrupt:
             print("\n🛑 Shutting down VisionSight Daemon.")
             break
         except Exception as e:
             print(f"⚠️ Daemon Error: {e}")
-            time.sleep(5)  # Prevent crash looping
+            time.sleep(5)
 
 if __name__ == "__main__":
     start_daemon()

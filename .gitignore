@@ -28,4 +28,3 @@ assets/known_faces/*.jpeg
 assets/known_faces/*.pkl
 assets/known_faces/*.enc
 .env
-phase_file/
