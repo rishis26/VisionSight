@@ -162,7 +162,7 @@ class StyledButton(QPushButton):
                 text-transform: uppercase;
             }}
             QPushButton:hover {{
-                background-color: #FF90E8;
+                background-color: #00E5FF;
             }}
             QPushButton:pressed {{
                 background-color: #000000;
@@ -191,7 +191,7 @@ class NavButton(QPushButton):
         self.active_style = """
             QPushButton {
                 text-align: left; padding: 14px 20px;
-                background: #FF90E8; color: #000000; font-size: 16px; font-weight: 900;
+                background: #00E5FF; color: #000000; font-size: 16px; font-weight: 900;
                 border: 3px solid #000000; margin-bottom: 12px;
             }
         """
@@ -332,7 +332,7 @@ class VisionSightGUI(QMainWindow):
         self.wiz_pass.setPlaceholderText("ENTER MAC LOGIN PASSWORD TO CONTINUE...")
         self.wiz_pass.setFont(QFont(".AppleSystemUIFont", 20, QFont.Weight.Black))
         self.wiz_pass.setMinimumHeight(70)
-        self.wiz_pass.setStyleSheet("QLineEdit { padding: 20px; background: #FFFFFF; border: 4px solid #000000; } QLineEdit:focus { background: #FF90E8; }")
+        self.wiz_pass.setStyleSheet("QLineEdit { padding: 20px; background: #FFFFFF; border: 4px solid #000000; } QLineEdit:focus { background: #00E5FF; }")
         w1_l.addWidget(self.wiz_pass)
         
         btn_next1 = StyledButton("ENCRYPT TO KEYCHAIN & CONTINUE", primary=True)
@@ -371,7 +371,7 @@ class VisionSightGUI(QMainWindow):
         self.wiz_name = QLineEdit()
         self.wiz_name.setPlaceholderText("ENTER YOUR NAME (e.g. USERNAME)")
         self.wiz_name.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Black))
-        self.wiz_name.setStyleSheet("QLineEdit { padding: 16px; border: 4px solid #000000; background: #FFFFFF; } QLineEdit:focus { background: #FF90E8; }")
+        self.wiz_name.setStyleSheet("QLineEdit { padding: 16px; border: 4px solid #000000; background: #FFFFFF; } QLineEdit:focus { background: #00E5FF; }")
         w2_l.addWidget(self.wiz_name)
         
         btn_next2 = StyledButton("CAPTURE IDENTITY AND FINISH", primary=True)
@@ -828,7 +828,7 @@ class VisionSightGUI(QMainWindow):
                 background-color: #E2E8F0;
             }
             QListWidget::item:selected { 
-                background: #FF90E8;
+                background: #00E5FF;
                 color: #000000; 
                 border: 2px solid #000000;
             }
@@ -1101,7 +1101,7 @@ class VisionSightGUI(QMainWindow):
         strict_s.setStyleSheet("""
                 QSlider::groove:horizontal { border: 3px solid #000000; height: 16px; background: #FFFFFF; }
                 QSlider::handle:horizontal { background: #000000; width: 30px; margin: -5px 0; }
-                QSlider::sub-page:horizontal { background: #FF90E8; border-right: 3px solid #000000; }
+                QSlider::sub-page:horizontal { background: #00E5FF; border-right: 3px solid #000000; }
         """)
         strict_val = QLabel(f"{strict_s.value()/100.0}")
         strict_val.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Black))
@@ -1213,7 +1213,7 @@ class VisionSightGUI(QMainWindow):
                 padding: 18px; background: #FFFFFF; 
                 border: 4px solid #000000; color: #000000;
             }
-            QLineEdit:focus { background: #FF90E8; border: 4px solid #000000; }
+            QLineEdit:focus { background: #00E5FF; border: 4px solid #000000; }
         """)
         form_layout.addWidget(self.password_input)
         
