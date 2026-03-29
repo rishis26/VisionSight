@@ -185,6 +185,20 @@ class FaceVerifier:
 
             for (top, right, bottom, left), landmarks, encoding in zip(face_locations, face_landmarks_list, face_encodings):
 
+                # -----------------------------------------------------
+                # LIVENESS CHECK: Are the eyes open?
+                # -----------------------------------------------------
+                if 'left_eye' in landmarks and 'right_eye' in landmarks:
+                    left_ear = self.calculate_ear(landmarks['left_eye'])
+                    right_ear = self.calculate_ear(landmarks['right_eye'])
+                    ear = (left_ear + right_ear) / 2.0
+                    
+                    # If EAR is too low, the eyes are closed. Reject unlock.
+                    if ear < self.EYE_AR_THRESH:
+                        print(f"⚠️ Liveness Failed: Eyes are closed (EAR: {ear:.2f}). Denying unlock access.")
+                        continue
+                # -----------------------------------------------------
+
                 name = "Unknown"
                 color = (0, 0, 255)
                 match_distance = 1.0
