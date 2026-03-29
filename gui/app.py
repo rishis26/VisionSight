@@ -235,7 +235,12 @@ class VisionSightGUI(QMainWindow):
         self.identity_preview_mode = False
 
         self.init_ui()
-        QTimer.singleShot(100, lambda: self.switch_to_page(0))
+        if self.is_onboarding_needed():
+            self.sidebar.hide()
+            self.content_stack.setCurrentIndex(5)
+            self.start_camera()
+        else:
+            QTimer.singleShot(100, lambda: self.switch_to_page(0))
 
     def init_ui(self):
         main_widget = SolidFrame()
@@ -252,12 +257,14 @@ class VisionSightGUI(QMainWindow):
         self.page_settings = self.create_settings_page()
         self.page_security = self.create_security_page()
         self.page_logs = self.create_logs_page()
+        self.page_onboarding = self.create_onboarding_page()
 
         self.content_stack.addWidget(self.page_dashboard)
         self.content_stack.addWidget(self.page_users)
         self.content_stack.addWidget(self.page_settings)
         self.content_stack.addWidget(self.page_security)
         self.content_stack.addWidget(self.page_logs)
+        self.content_stack.addWidget(self.page_onboarding)
 
         main_layout.addWidget(self.sidebar)
         
@@ -277,6 +284,146 @@ class VisionSightGUI(QMainWindow):
     def silent_refresh_dashboard(self):
         if self.content_stack.currentIndex() == 0:
             self.refresh_dashboard_status()
+
+    def is_onboarding_needed(self):
+        pw_exists = False
+        try:
+            subprocess.check_output(['security', 'find-generic-password', '-s', 'VisionSightDaemon', '-w'], stderr=subprocess.DEVNULL)
+            pw_exists = True
+        except:
+            pass
+            
+        faces_exist = False
+        if os.path.exists(self.encodings_path):
+            with open(self.encodings_path, 'rb') as f:
+                data = pickle.load(f)
+                if len(data) > 0:
+                    faces_exist = True
+                    
+        return not (pw_exists and faces_exist)
+
+    def create_onboarding_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.wizard_stack = QStackedWidget()
+        
+        # S1: PASSWORD
+        w1 = self.card_frame("#FFFFFF")
+        w1_l = QVBoxLayout(w1)
+        w1_l.setContentsMargins(50, 50, 50, 50)
+        w1_l.setSpacing(30)
+        
+        t1 = QLabel("WELCOME TO VISIONSIGHT")
+        t1.setFont(QFont(".AppleSystemUIFont", 48, QFont.Weight.Black))
+        t1.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        w1_l.addWidget(t1)
+        
+        d1 = QLabel("Before you can use the frictionless biometric bypass, you need to securely inject your Mac password.\\n\\n🔒 PRIVACY GUARANTEE: Your password is encrypted natively into the Apple Mac hardware keychain enclave.\\nIt never touches the cloud and is strictly physically localized to your machine.")
+        d1.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Bold))
+        d1.setStyleSheet("color: #4B5563; line-height: 1.5;")
+        d1.setWordWrap(True)
+        d1.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        w1_l.addWidget(d1)
+        
+        self.wiz_pass = QLineEdit()
+        self.wiz_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        self.wiz_pass.setPlaceholderText("ENTER MAC LOGIN PASSWORD TO CONTINUE...")
+        self.wiz_pass.setFont(QFont(".AppleSystemUIFont", 20, QFont.Weight.Black))
+        self.wiz_pass.setMinimumHeight(70)
+        self.wiz_pass.setStyleSheet("QLineEdit { padding: 20px; background: #FFFFFF; border: 4px solid #000000; } QLineEdit:focus { background: #FF90E8; }")
+        w1_l.addWidget(self.wiz_pass)
+        
+        btn_next1 = StyledButton("ENCRYPT TO KEYCHAIN & CONTINUE", primary=True)
+        btn_next1.setMinimumHeight(70)
+        btn_next1.clicked.connect(self.wizard_save_password)
+        w1_l.addWidget(btn_next1)
+        w1_l.addStretch()
+        
+        # S2: FACE
+        w2 = self.card_frame("#FFFFFF")
+        w2_l = QVBoxLayout(w2)
+        w2_l.setContentsMargins(50, 50, 50, 50)
+        w2_l.setSpacing(20)
+        
+        t2 = QLabel("BIOMETRIC REGISTRATION")
+        t2.setFont(QFont(".AppleSystemUIFont", 40, QFont.Weight.Black))
+        t2.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        w2_l.addWidget(t2)
+        
+        d2 = QLabel("Look directly at the camera. Ensure your face is clearly visible.")
+        d2.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Bold))
+        d2.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        w2_l.addWidget(d2)
+        
+        self.wiz_video = QLabel()
+        self.wiz_video.setFixedSize(360, 270)
+        self.wiz_video.setStyleSheet("background-color: #000000; border: 4px solid #000000;")
+        self.wiz_video.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        vid_row = QHBoxLayout()
+        vid_row.addStretch()
+        vid_row.addWidget(self.wiz_video)
+        vid_row.addStretch()
+        w2_l.addLayout(vid_row)
+        
+        self.wiz_name = QLineEdit()
+        self.wiz_name.setPlaceholderText("ENTER YOUR NAME (e.g. USERNAME)")
+        self.wiz_name.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Black))
+        self.wiz_name.setStyleSheet("QLineEdit { padding: 16px; border: 4px solid #000000; background: #FFFFFF; } QLineEdit:focus { background: #FF90E8; }")
+        w2_l.addWidget(self.wiz_name)
+        
+        btn_next2 = StyledButton("CAPTURE IDENTITY AND FINISH", primary=True)
+        btn_next2.setMinimumHeight(60)
+        btn_next2.clicked.connect(self.wizard_save_face)
+        w2_l.addWidget(btn_next2)
+        
+        self.wizard_stack.addWidget(w1)
+        self.wizard_stack.addWidget(w2)
+        layout.addWidget(self.wizard_stack)
+        
+        return page
+
+    def wizard_save_password(self):
+        pw = self.wiz_pass.text()
+        if not pw:
+            QMessageBox.warning(self, "ERROR", "PASSWORD REQUIRED.")
+            return
+        try:
+            subprocess.run(['security', 'delete-generic-password', '-a', os.getlogin(), '-s', 'VisionSightDaemon'], capture_output=True)
+            subprocess.run(['security', 'add-generic-password', '-a', os.getlogin(), '-s', 'VisionSightDaemon', '-w', pw], check=True)
+            self.wizard_stack.setCurrentIndex(1)
+        except Exception as e:
+            QMessageBox.warning(self, "ERROR", f"FAILED TO UPDATE KEYCHAIN: {e}")
+
+    def wizard_save_face(self):
+        if self.current_cv_frame is None: return
+        name = self.wiz_name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "ERROR", "NAME REQUIRED.")
+            return
+            
+        frame = self.current_cv_frame.copy()
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        locs = face_recognition.face_locations(rgb_frame)
+        if not locs:
+            QMessageBox.warning(self, "ERROR", "NO FACE DETECTED.")
+            return
+        encs = face_recognition.face_encodings(rgb_frame, locs)
+        if encs:
+            data = self.load_encodings()
+            data[name] = encs[0]
+            self.save_encodings(data)
+            
+            img_path = os.path.join(self.faces_dir, f"{name}.jpg")
+            cv2.imwrite(img_path, frame)
+            
+            QMessageBox.information(self, "SUCCESS", "BIOMETRIC PROFILE SECURED.")
+            self.sidebar.show()
+            self.switch_to_page(0)
+        else:
+            QMessageBox.warning(self, "ERROR", "FAILED TO ENCODE FACE.")
 
     def create_sidebar(self):
         sidebar = QFrame()
@@ -525,8 +672,8 @@ class VisionSightGUI(QMainWindow):
             # Recreate and load plist on every START operation to guarantee paths and environment are always in-sync
             self.create_and_load_plist()
         else:
-            # STOP operation halts execution but keeps it registered for next reboot
-            subprocess.run(["launchctl", "stop", "com.visionsight.daemon"], capture_output=True)
+            # Fully dismantle to defeat launchd's aggressive KeepAlive resurrection 
+            self.uninstall_daemon()
 
         QTimer.singleShot(500, self.refresh_dashboard_status)
 
@@ -847,6 +994,12 @@ class VisionSightGUI(QMainWindow):
                     Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
                     Qt.TransformationMode.SmoothTransformation)
                 self.video_label.setPixmap(pm)
+        elif getattr(self, "content_stack", None) and getattr(self.content_stack, "currentIndex", lambda: -1)() == 5:
+            pm = QPixmap.fromImage(qt_img).scaled(
+                360, 270, 
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
+                Qt.TransformationMode.SmoothTransformation)
+            self.wiz_video.setPixmap(pm)
 
     def closeEvent(self, event):
         if hasattr(self, 'status_timer') and self.status_timer.isActive():
