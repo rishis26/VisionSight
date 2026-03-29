@@ -13,9 +13,6 @@
     <key>RunAtLoad</key>
     <true/>
 
-    <key>KeepAlive</key>
-    <true/>
-
     <key>StandardOutPath</key>
     <string>/Users/rishishah/Study/Project/VisionSight/logs/daemon.log</string>
 
