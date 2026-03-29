@@ -17,8 +17,10 @@ class OSNotificationListener(NSObject):
         return self
 
     def screenLocked_(self, notification):
-        print("\n🔒 [OS EVENT] True Hardware Lock Detected. Firing camera...")
-        self._start_scan_if_needed()
+        print("\n🔒 [OS EVENT] True Hardware Lock Detected. Waiting for display wake to scan...")
+        # Intentionally NOT starting scan here. 
+        # Scan triggers on `screenAwake_` when you open the lid or wake the display.
+        # self._start_scan_if_needed()
 
     def screenAwake_(self, notification):
         print("\n☀️ [OS EVENT] Display Wake Detected.")
