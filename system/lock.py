@@ -78,7 +78,8 @@ class SystemController:
         if self._is_macos_locked():
             print(f'Access Granted to {user_name}. Waking Mac...')
             try:
-                subprocess.run(['caffeinate', '-u', '-t', '2'], check=True)
+                # Run caffeinate in the background so it doesn't block for 2 seconds
+                subprocess.Popen(['caffeinate', '-u', '-t', '2'])
                 mac_password = self._get_secure_password()
                 if mac_password:
                     # Wake screen via Spacebar
