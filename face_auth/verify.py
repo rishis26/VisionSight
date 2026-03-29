@@ -7,8 +7,7 @@ import numpy as np
 import time
 import threading
 import sys
-import tty
-import termios
+import sys
 from collections import deque
 
 class FaceVerifier:
@@ -70,27 +69,7 @@ class FaceVerifier:
         cv2.destroyAllWindows()
         print("📷 Camera released.")
 
-    def _listen_for_esc(self):
-        """
-        Background thread that listens for Esc key from terminal.
-        Works in headless mode where cv2.waitKey() cannot capture keys.
-        Sets self._stop_requested = True when Esc (27) is pressed.
-        """
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            while not self.is_authenticated and not self._stop_requested:
-                ch = sys.stdin.read(1)
-                if ord(ch) == 27:  # Esc key
-                    print("\n🛑 Esc pressed. Stopping scan.")
-                    self._stop_requested = True
-                    break
-        except Exception:
-            pass
-        finally:
-            # Always restore terminal settings
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
 
     def authenticate_once(self, system_controller):
         """
@@ -115,36 +94,66 @@ class FaceVerifier:
         self.frames_unauthorized = 0
         self._stop_requested = False
 
-        # Start background thread to listen for Esc in headless mode
-        esc_thread = threading.Thread(target=self._listen_for_esc, daemon=True)
-        esc_thread.start()
+        # Admin-Level Hook: Catch Esc key securely across the entire OS (bypassing Lock Screen event swallowing)
+        def on_press(key):
+            try:
+                from pynput import keyboard
+                if key == keyboard.Key.esc:
+                    print("\n🛑 Admin Hardware Hook: Esc key intercepted globally!")
+                    self._stop_requested = True
+                    return False  # Kill the keyboard listener
+            except Exception:
+                pass
+
+        try:
+            from pynput import keyboard
+            esc_listener = keyboard.Listener(on_press=on_press)
+            esc_listener.start()
+        except Exception as e:
+            print(f"⚠️ Could not start pynput listener: {e}")
+            esc_listener = None
+
+        last_display_check = time.time()
 
         while True:
+            # Check physical hardware display state strictly every 1.0s to catch idle sleep
+            current_time = time.time()
+            if current_time - last_display_check >= 1.0:
+                if not system_controller._is_display_on():
+                    self._stop_requested = True
+                last_display_check = current_time
 
-            # ── ESC: user pressed Esc from terminal ─────────────────────────
             if self._stop_requested:
-                print("🛑 Scan stopped by user.")
+                print("🛑 Scan aborted by OS/User event (Esc/Sleep).")
                 self._release_camera()
+                if esc_listener:
+                    esc_listener.stop()
                 return "rejected"
 
             # ── ABORT: screen no longer locked ──────────────────────────────
             if not system_controller._is_macos_locked():
                 print("🛑 ABORT: Screen unlocked externally.")
                 self._release_camera()
+                if esc_listener:
+                    esc_listener.stop()
                 return "aborted"
 
             ret, frame = self.cap.read()
             if not ret:
                 print("⚠️ Webcam read failed.")
                 self._release_camera()
+                if esc_listener:
+                    esc_listener.stop()
                 return "failed"
 
             # Non-headless Esc via cv2 window
             if not self.headless:
-                key = cv2.waitKey(1) & 0xFF
-                if key == 27:
+                key_cv = cv2.waitKey(1) & 0xFF
+                if key_cv == 27:
                     print("🛑 Esc pressed.")
                     self._release_camera()
+                    if esc_listener:
+                        esc_listener.stop()
                     return "rejected"
 
             # --- Preprocessing ---
@@ -191,6 +200,8 @@ class FaceVerifier:
 
                             # Release camera FIRST — light off before screen wakes
                             self._release_camera()
+                            if esc_listener:
+                                esc_listener.stop()
 
                             # Then unlock
                             system_controller.simulate_unlock(name)
@@ -221,6 +232,8 @@ class FaceVerifier:
                 cv2.imshow('VisionSight - Secure Biometric Session', frame)
 
         self._release_camera()
+        if esc_listener:
+            esc_listener.stop()
         return "aborted"
 
 if __name__ == "__main__":
