@@ -10,11 +10,18 @@ import sys
 import sys
 from collections import deque
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 class FaceVerifier:
     def __init__(self, encodings_path="assets/known_faces/encodings.pkl", video_source=0, on_lock=None, on_unlock=None, headless=True):
         print("Initializing Advanced Identity Verification Engine...")
         
-        self.video_source = video_source
+        # Load configurable options from .env
+        self.video_source = int(os.getenv("VISIONSIGHT_CAMERA", video_source))
+        self.TOLERANCE = float(os.getenv("VISIONSIGHT_TOLERANCE", 0.45))
+
         self.headless = headless
         self.on_lock = on_lock
         self.on_unlock = on_unlock
@@ -23,8 +30,6 @@ class FaceVerifier:
         self.known_names = []
         self.known_encodings = []
         self.load_known_faces()
-
-        self.TOLERANCE = 0.45
         self.EYE_AR_THRESH = 0.25
         self.EAR_BUFFER_SIZE = 3
         self.ear_history = deque(maxlen=self.EAR_BUFFER_SIZE)
