@@ -12,10 +12,12 @@ from collections import deque
 
 from dotenv import load_dotenv
 
-load_dotenv()
+import system.paths as paths
+
+load_dotenv(paths.get_env_path())
 
 class FaceVerifier:
-    def __init__(self, encodings_path="assets/known_faces/encodings.pkl", video_source=0, on_lock=None, on_unlock=None, headless=True):
+    def __init__(self, encodings_path=None, video_source=0, on_lock=None, on_unlock=None, headless=True):
         print("Initializing Advanced Identity Verification Engine...")
         
         # Load configurable options from .env
@@ -26,7 +28,7 @@ class FaceVerifier:
         self.on_lock = on_lock
         self.on_unlock = on_unlock
         
-        self.encodings_path = encodings_path
+        self.encodings_path = encodings_path if encodings_path else paths.get_encodings_path()
         self.known_names = []
         self.known_encodings = []
         
@@ -64,8 +66,8 @@ class FaceVerifier:
 
     def reload_config(self):
         print("🔄 Hot-reloading configurations from core...")
-        from dotenv import load_dotenv, find_dotenv
-        load_dotenv(find_dotenv(), override=True)
+        from dotenv import load_dotenv
+        load_dotenv(paths.get_env_path(), override=True)
         
         self.video_source = int(os.getenv("VISIONSIGHT_CAMERA", 0))
         self.TOLERANCE = float(os.getenv("VISIONSIGHT_TOLERANCE", 0.55))

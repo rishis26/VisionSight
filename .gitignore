@@ -1,30 +1,21 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
+# Development Environment
 venv/
-pip-log.txt
-pip-delete-this-directory.txt
-.venv
-pip-wheel-metadata/
-
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-Icon?
-
-# Logs and databases
-logs/*.log
-*.sqlite3
-
-# Project specific (Biometric Data - Keep Local)
-assets/known_faces/*.jpg
-assets/known_faces/*.png
-assets/known_faces/*.jpeg
-assets/known_faces/*.pkl
-assets/known_faces/*.enc
+__pycache__/
+*.pyc
 .env
+
+# MacOS / OS specific
+.DS_Store
+*.swp
+
+# Build Artifacts
+build/
+dist/
+*.spec
+*.app
+*.dmg
+
+# Local Database / Cache
+assets/known_faces/*.jpg
+assets/known_faces/*.pkl
+logs/

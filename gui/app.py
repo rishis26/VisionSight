@@ -1,5 +1,8 @@
 import sys
 import os
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import subprocess
 import cv2
 import pickle
@@ -210,13 +213,15 @@ class VisionSightGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("VisionSight - Neo Control Panel")
-        self.setFixedSize(1100, 720)
+        self.setMinimumSize(1100, 720)
 
+        import system.paths as paths
         self.project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self.encodings_path = os.path.join(self.project_dir, "assets", "known_faces", "encodings.pkl")
-        self.env_path = os.path.join(self.project_dir, ".env")
-        self.log_path = os.path.join(self.project_dir, "logs", "daemon.log")
-        self.icon_path = os.path.join(self.project_dir, "assets", "icon.png")
+        self.encodings_path = paths.get_encodings_path()
+        self.env_path = paths.get_env_path()
+        self.log_path = paths.get_log_path()
+        self.icon_path = paths.get_icon_path()
+        self.faces_dir = paths.get_known_faces_dir()
         
         if not os.path.exists(self.env_path):
             open(self.env_path, 'w').close()
@@ -245,11 +250,13 @@ class VisionSightGUI(QMainWindow):
         self.page_dashboard = self.create_dashboard_page()
         self.page_users = self.create_users_page()
         self.page_settings = self.create_settings_page()
+        self.page_security = self.create_security_page()
         self.page_logs = self.create_logs_page()
 
         self.content_stack.addWidget(self.page_dashboard)
         self.content_stack.addWidget(self.page_users)
         self.content_stack.addWidget(self.page_settings)
+        self.content_stack.addWidget(self.page_security)
         self.content_stack.addWidget(self.page_logs)
 
         main_layout.addWidget(self.sidebar)
@@ -312,7 +319,8 @@ class VisionSightGUI(QMainWindow):
             NavButton("OVERVIEW", 0, self.switch_to_page, QStyle.StandardPixmap.SP_ComputerIcon),
             NavButton("IDENTITIES", 1, self.switch_to_page, QStyle.StandardPixmap.SP_DirIcon),
             NavButton("CONFIG", 2, self.switch_to_page, QStyle.StandardPixmap.SP_FileDialogDetailedView),
-            NavButton("LOG FILES", 3, self.switch_to_page, QStyle.StandardPixmap.SP_FileIcon)
+            NavButton("SYSTEM SEC", 3, self.switch_to_page, QStyle.StandardPixmap.SP_DriveHDIcon),
+            NavButton("LOG FILES", 4, self.switch_to_page, QStyle.StandardPixmap.SP_FileIcon)
         ]
         
         for btn in self.nav_btns:
@@ -353,7 +361,7 @@ class VisionSightGUI(QMainWindow):
         elif index == 1:
             self.refresh_identity_list()
             self.start_camera() 
-        elif index == 3:
+        elif index == 4:
             self.stop_camera()
             self.refresh_logs()
         else:
@@ -450,17 +458,77 @@ class VisionSightGUI(QMainWindow):
         except subprocess.CalledProcessError:
             return False
 
+    def create_and_load_plist(self):
+        plist_path = os.path.expanduser("~/Library/LaunchAgents/com.visionsight.daemon.plist")
+        
+        if getattr(sys, 'frozen', False):
+            daemon_exe = os.path.join(os.path.dirname(sys.executable), "VisionSightDaemon")
+        else:
+            daemon_exe = sys.executable + " " + os.path.abspath(os.path.join(self.project_dir, "main.py"))
+
+        import system.paths as paths
+        app_data = paths.get_app_data_dir()
+        log_file = os.path.join(app_data, 'logs', 'daemon.log')
+        err_file = os.path.join(app_data, 'logs', 'daemon.err')
+        
+        plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.visionsight.daemon</string>
+    <key>ProgramArguments</key>
+    <array>
+"""
+        import shlex
+        for arg in shlex.split(daemon_exe):
+            plist_content += f"        <string>{arg}</string>\n"
+            
+        plist_content += f"""    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{log_file}</string>
+    <key>StandardErrorPath</key>
+    <string>{err_file}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <key>PYTHONPATH</key>
+        <string>{self.project_dir}</string>
+    </dict>
+</dict>
+</plist>
+"""
+        with open(plist_path, "w") as f:
+            f.write(plist_content)
+        
+        subprocess.run(["launchctl", "unload", plist_path], capture_output=True)
+        res_load = subprocess.run(["launchctl", "load", plist_path], capture_output=True, text=True)
+        res_start = subprocess.run(["launchctl", "start", "com.visionsight.daemon"], capture_output=True, text=True)
+        
+        if res_load.returncode != 0:
+            print(f"Launchctl Load Error: {res_load.stderr}")
+
+    def uninstall_daemon(self):
+        plist_path = os.path.expanduser("~/Library/LaunchAgents/com.visionsight.daemon.plist")
+        subprocess.run(["launchctl", "stop", "com.visionsight.daemon"], capture_output=True)
+        subprocess.run(["launchctl", "unload", plist_path], capture_output=True)
+        if os.path.exists(plist_path):
+            os.remove(plist_path)
+
     def toggle_daemon(self, state):
         if state:
-            try:
-                subprocess.check_output('launchctl list | grep com.visionsight.daemon', shell=True)
-                cmd = 'start'
-            except subprocess.CalledProcessError:
-                cmd = 'install'
+            # Recreate and load plist on every START operation to guarantee paths and environment are always in-sync
+            self.create_and_load_plist()
         else:
-            cmd = 'stop'
-        subprocess.run([os.path.join(self.project_dir, 'manage_daemon.sh'), cmd], cwd=self.project_dir)
-        self.refresh_dashboard_status()
+            # STOP operation halts execution but keeps it registered for next reboot
+            subprocess.run(["launchctl", "stop", "com.visionsight.daemon"], capture_output=True)
+
+        QTimer.singleShot(500, self.refresh_dashboard_status)
 
     def refresh_dashboard_status(self):
         running = self.is_daemon_running()
@@ -640,7 +708,7 @@ class VisionSightGUI(QMainWindow):
             return
             
         name = selected[0].text()
-        img_path = os.path.join(self.project_dir, "assets", "known_faces", f"{name}.jpg")
+        img_path = os.path.join(self.faces_dir, f"{name}.jpg")
         self.identity_preview_mode = True
         
         if os.path.exists(img_path):
@@ -709,7 +777,7 @@ class VisionSightGUI(QMainWindow):
             data[name] = encoding
             self.save_encodings(data)
             
-            img_path = os.path.join(self.project_dir, "assets", "known_faces", f"{name}.jpg")
+            img_path = os.path.join(self.faces_dir, f"{name}.jpg")
             cv2.imwrite(img_path, frame)
             
             self.refresh_identity_list()
@@ -735,7 +803,7 @@ class VisionSightGUI(QMainWindow):
             del data[name]
             self.save_encodings(data)
             
-            img_path = os.path.join(self.project_dir, "assets", "known_faces", f"{name}.jpg")
+            img_path = os.path.join(self.faces_dir, f"{name}.jpg")
             if os.path.exists(img_path):
                 os.remove(img_path)
                 
@@ -930,6 +998,8 @@ class VisionSightGUI(QMainWindow):
         self.auto_unlock_toggle = ToggleButton(checked=os.getenv("VISIONSIGHT_AUTO_UNLOCK", "true").lower() == "true")
         form_layout.addWidget(self.create_setting_row("AUTO UNLOCK", "INJECT PASSWORD", self.auto_unlock_toggle))
 
+
+
         form_layout.addStretch()
         layout.addWidget(card)
         return page
@@ -947,6 +1017,76 @@ class VisionSightGUI(QMainWindow):
         
         set_key(self.env_path, "VISIONSIGHT_RESOLUTION", self.combo_res.currentText())
         set_key(self.env_path, "VISIONSIGHT_AUTO_UNLOCK", "true" if self.auto_unlock_toggle.isChecked() else "false")
+
+    def create_security_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(30)
+        
+        header_layout = QHBoxLayout()
+        header = QLabel("SYSTEM SECURITY")
+        header.setFont(QFont(".AppleSystemUIFont", 40, QFont.Weight.Black))
+        header.setStyleSheet("color: #000000;")
+        header_layout.addWidget(header)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
+        
+        card = self.card_frame("#FFFFFF")
+        form_layout = QVBoxLayout(card)
+        form_layout.setContentsMargins(40, 40, 40, 40)
+        form_layout.setSpacing(25)
+
+        info = QLabel("VISIONSIGHT KEYCHAIN ACCESS")
+        info.setFont(QFont(".AppleSystemUIFont", 24, QFont.Weight.Black))
+        info.setStyleSheet("color: #000000;")
+        form_layout.addWidget(info)
+        
+        desc = QLabel("Your Mac password is required to bypass the Lock Screen immediately upon facial recognition.\nThis string is natively routed and encrypted deep inside the macOS Apple Keychain hardware enclave.\nIt is strictly read-only by the Daemon and is never written to disk or transmitted.")
+        desc.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Bold))
+        desc.setStyleSheet("color: #4B5563; line-height: 1.5;")
+        desc.setWordWrap(True)
+        form_layout.addWidget(desc)
+        
+        form_layout.addSpacing(20)
+
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_input.setPlaceholderText("ENTER YOUR MAC LOGIN PASSWORD...")
+        self.password_input.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Black))
+        self.password_input.setMinimumHeight(60)
+        self.password_input.setStyleSheet("""
+            QLineEdit {
+                padding: 18px; background: #FFFFFF; 
+                border: 4px solid #000000; color: #000000;
+            }
+            QLineEdit:focus { background: #FF90E8; border: 4px solid #000000; }
+        """)
+        form_layout.addWidget(self.password_input)
+        
+        btn_keychain = StyledButton("ENCRYPT TO APPLE KEYCHAIN", primary=True)
+        btn_keychain.setMinimumHeight(60)
+        btn_keychain.clicked.connect(self.update_keychain_password)
+        form_layout.addWidget(btn_keychain)
+
+        form_layout.addStretch()
+        layout.addWidget(card)
+        return page
+
+    def update_keychain_password(self):
+        mac_password = self.password_input.text()
+        if not mac_password:
+            QMessageBox.warning(self, "ERROR", "PASSWORD CANNOT BE EMPTY.")
+            return
+            
+        try:
+            import getpass
+            subprocess.run(['security', 'delete-generic-password', '-a', os.getlogin(), '-s', 'VisionSightDaemon'], capture_output=True)
+            subprocess.run(['security', 'add-generic-password', '-a', os.getlogin(), '-s', 'VisionSightDaemon', '-w', mac_password], check=True)
+            QMessageBox.information(self, "SUCCESS", "PASSWORD SECURELY ENCRYPTED IN KEYCHAIN.")
+            self.password_input.clear()
+        except Exception as e:
+            QMessageBox.warning(self, "ERROR", f"FAILED TO UPDATE KEYCHAIN: {e}")
 
     # ----------------------------------------------------
     # PAGE 4: LOGS
