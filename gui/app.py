@@ -320,7 +320,7 @@ class VisionSightGUI(QMainWindow):
         t1.setAlignment(Qt.AlignmentFlag.AlignCenter)
         w1_l.addWidget(t1)
         
-        d1 = QLabel("Before you can use the frictionless biometric bypass, you need to securely inject your Mac password.\\n\\n🔒 PRIVACY GUARANTEE: Your password is encrypted natively into the Apple Mac hardware keychain enclave.\\nIt never touches the cloud and is strictly physically localized to your machine.")
+        d1 = QLabel("Before you can use the frictionless biometric bypass, you need to securely inject your Mac password.\n\n🔒 PRIVACY GUARANTEE: Your password is encrypted natively into the Apple Mac hardware keychain enclave.\nIt never touches the cloud and is strictly physically localized to your machine.")
         d1.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Bold))
         d1.setStyleSheet("color: #4B5563; line-height: 1.5;")
         d1.setWordWrap(True)
@@ -332,10 +332,10 @@ class VisionSightGUI(QMainWindow):
         self.wiz_pass.setPlaceholderText("ENTER MAC LOGIN PASSWORD TO CONTINUE...")
         self.wiz_pass.setFont(QFont(".AppleSystemUIFont", 20, QFont.Weight.Black))
         self.wiz_pass.setMinimumHeight(70)
-        self.wiz_pass.setStyleSheet("QLineEdit { padding: 20px; background: #FFFFFF; border: 4px solid #000000; } QLineEdit:focus { background: #00E5FF; }")
+        self.wiz_pass.setStyleSheet("QLineEdit { padding: 20px; background: #FFFFFF; border: 4px solid #000000; color: #000000; } QLineEdit:focus { background: #00E5FF; color: #000000; }")
         w1_l.addWidget(self.wiz_pass)
         
-        btn_next1 = StyledButton("ENCRYPT TO KEYCHAIN & CONTINUE", primary=True)
+        btn_next1 = StyledButton("ENCRYPT TO KEYCHAIN && CONTINUE", primary=True)
         btn_next1.setMinimumHeight(70)
         btn_next1.clicked.connect(self.wizard_save_password)
         w1_l.addWidget(btn_next1)
@@ -371,7 +371,7 @@ class VisionSightGUI(QMainWindow):
         self.wiz_name = QLineEdit()
         self.wiz_name.setPlaceholderText("ENTER YOUR NAME (e.g. USERNAME)")
         self.wiz_name.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Black))
-        self.wiz_name.setStyleSheet("QLineEdit { padding: 16px; border: 4px solid #000000; background: #FFFFFF; } QLineEdit:focus { background: #00E5FF; }")
+        self.wiz_name.setStyleSheet("QLineEdit { padding: 16px; border: 4px solid #000000; background: #FFFFFF; color: #000000; } QLineEdit:focus { background: #00E5FF; color: #000000; }")
         w2_l.addWidget(self.wiz_name)
         
         btn_next2 = StyledButton("CAPTURE IDENTITY AND FINISH", primary=True)
