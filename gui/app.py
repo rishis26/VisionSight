@@ -4,6 +4,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import subprocess
+import time
 import cv2
 import pickle
 import numpy as np
@@ -18,6 +19,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QThread, pyqtSignal, QSize, pyqtProperty
 from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QPainter, QBrush, QIcon, QPen
 from dotenv import load_dotenv, set_key
+
+# Daemon core — runs as a background thread inside this same process
+from main import DaemonCore, DaemonBridge
 
 # ---------------------------------------------------------
 # NEO-BRUTALIST UI COMPONENTS
@@ -130,6 +134,48 @@ class CameraThread(QThread):
         self._run_flag = False
         self.wait()
 
+
+class DaemonScanThread(QThread):
+    """
+    Runs the blocking face-recognition camera scan as a Qt-managed thread.
+
+    WHY QThread and not threading.Thread:
+      cv2.VideoCapture() on Apple Silicon (macOS Sonoma) raises EXC_BAD_INSTRUCTION
+      when called from a raw Python threading.Thread. QThreads are registered with
+      the macOS CoreMedia / AVFoundation subsystem and are safe for camera access.
+
+    The daemon background thread (threading.Thread) ONLY emits Qt signals.
+    This QThread does all the actual camera + face-recognition work.
+    """
+
+    scan_complete = pyqtSignal(str)  # result: 'success' | 'rejected' | 'aborted' | 'failed'
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from system.lock import SystemController
+        from face_auth.verify import FaceVerifier
+        self.system = SystemController()
+        self.verifier = FaceVerifier(headless=True)
+
+    def run(self):
+        """Blocking scan. Runs on this QThread's execution context.
+
+        use_esc_hook=False: skips pynput's CGEventTap which requires a CFRunLoop
+        on the calling thread (QThread has none). Abort is handled externally via
+        _stop_requested set by the daemon's Qt abort signal.
+        """
+        try:
+            self.verifier.reload_config()
+            result = self.verifier.authenticate_once(self.system, use_esc_hook=False)
+        except Exception as e:
+            print(f"⚠️ DaemonScanThread exception: {e}")
+            result = "failed"
+        self.scan_complete.emit(result)
+
+    def abort(self):
+        """Thread-safe abort: sets a flag the verifier checks each frame."""
+        self.verifier._stop_requested = True
+
 class StyledButton(QPushButton):
     def __init__(self, text, primary=True, is_danger=False):
         super().__init__(text)
@@ -233,6 +279,13 @@ class VisionSightGUI(QMainWindow):
         self.camera_thread = None
         self.current_cv_frame = None
         self.identity_preview_mode = False
+
+        # Daemon core — created once, signal-wired on start
+        self._daemon_core: DaemonCore | None = None
+
+        # Active scan worker (QThread) — safe for cv2 on Apple Silicon
+        self._scan_thread: DaemonScanThread | None = None
+        self._last_scan_end: float = 0.0
 
         self.init_ui()
         if self.is_onboarding_needed():
@@ -595,87 +648,87 @@ class VisionSightGUI(QMainWindow):
 
         return page
 
-    def is_daemon_running(self):
-        try:
-            output = subprocess.check_output('launchctl list | grep com.visionsight.daemon', shell=True, text=True)
-            parts = output.strip().split()
-            if len(parts) > 0 and parts[0] != '-':
-                return True
-            return False
-        except subprocess.CalledProcessError:
-            return False
+    def is_daemon_running(self) -> bool:
+        """Check if the in-process daemon thread is alive."""
+        return self._daemon_core is not None and self._daemon_core.is_alive()
 
-    def create_and_load_plist(self):
-        plist_path = os.path.expanduser("~/Library/LaunchAgents/com.visionsight.daemon.plist")
-        
-        if getattr(sys, 'frozen', False):
-            daemon_exe = os.path.join(os.path.dirname(sys.executable), "VisionSightDaemon")
-        else:
-            daemon_exe = sys.executable + " " + os.path.abspath(os.path.join(self.project_dir, "main.py"))
+    def start_daemon_thread(self):
+        """Start the daemon listener thread and wire its bridge signals."""
+        if self.is_daemon_running():
+            print("⚠️ Daemon already running — ignoring start request.")
+            return
+        self._daemon_core = DaemonCore()
+        # Connect bridge Qt signals (AutoConnection = queued cross-thread delivery)
+        self._daemon_core.bridge.scan_requested.connect(self._on_daemon_scan_requested)
+        self._daemon_core.bridge.abort_requested.connect(self._on_daemon_abort_requested)
+        self._daemon_core.start()
 
-        import system.paths as paths
-        app_data = paths.get_app_data_dir()
-        log_file = os.path.join(app_data, 'logs', 'daemon.log')
-        err_file = os.path.join(app_data, 'logs', 'daemon.err')
-        
-        plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.visionsight.daemon</string>
-    <key>ProgramArguments</key>
-    <array>
-"""
-        import shlex
-        for arg in shlex.split(daemon_exe):
-            plist_content += f"        <string>{arg}</string>\n"
-            
-        plist_content += f"""    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>{log_file}</string>
-    <key>StandardErrorPath</key>
-    <string>{err_file}</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PYTHONUNBUFFERED</key>
-        <string>1</string>
-        <key>PYTHONPATH</key>
-        <string>{self.project_dir}</string>
-    </dict>
-</dict>
-</plist>
-"""
-        with open(plist_path, "w") as f:
-            f.write(plist_content)
-        
-        subprocess.run(["launchctl", "unload", plist_path], capture_output=True)
-        res_load = subprocess.run(["launchctl", "load", plist_path], capture_output=True, text=True)
-        res_start = subprocess.run(["launchctl", "start", "com.visionsight.daemon"], capture_output=True, text=True)
-        
-        if res_load.returncode != 0:
-            print(f"Launchctl Load Error: {res_load.stderr}")
-
-    def uninstall_daemon(self):
-        plist_path = os.path.expanduser("~/Library/LaunchAgents/com.visionsight.daemon.plist")
-        subprocess.run(["launchctl", "stop", "com.visionsight.daemon"], capture_output=True)
-        subprocess.run(["launchctl", "unload", plist_path], capture_output=True)
-        if os.path.exists(plist_path):
-            os.remove(plist_path)
+    def stop_daemon_thread(self):
+        """Abort any active scan, then shut down the listener thread."""
+        self._on_daemon_abort_requested()  # no-op if no scan running
+        if self._daemon_core:
+            self._daemon_core.stop()
+            self._daemon_core = None
 
     def toggle_daemon(self, state):
+        """Called by the dashboard toggle button."""
         if state:
-            # Recreate and load plist on every START operation to guarantee paths and environment are always in-sync
-            self.create_and_load_plist()
+            self.start_daemon_thread()
         else:
-            # Fully dismantle to defeat launchd's aggressive KeepAlive resurrection 
-            self.uninstall_daemon()
+            self.stop_daemon_thread()
+        QTimer.singleShot(600, self.refresh_dashboard_status)
 
-        QTimer.singleShot(500, self.refresh_dashboard_status)
+    # ── Daemon scan slots (always called on main thread via Qt queued delivery) ──
+
+    def _on_daemon_scan_requested(self):
+        """
+        Called on the MAIN THREAD when the daemon detects wake-while-locked.
+        Starts a DaemonScanThread (QThread) — safe for cv2 on Apple Silicon.
+        """
+        if self._scan_thread and self._scan_thread.isRunning():
+            print("⚠️ Scan already in progress — ignoring duplicate request.")
+            return
+
+        # Read cooldown from live .env (daemon may have reloaded config)
+        import system.paths as paths
+        from dotenv import load_dotenv
+        load_dotenv(paths.get_env_path(), override=True)
+        cooldown = int(os.getenv("VISIONSIGHT_COOLDOWN", "10"))
+        elapsed = time.time() - self._last_scan_end
+        if elapsed < cooldown:
+            print(f"⏳ Cooldown active — {int(cooldown - elapsed)}s remaining.")
+            return
+
+        print("🟢 [MAIN THREAD] Starting DaemonScanThread (cv2-safe QThread)...")
+        # Yield the GUI camera so the scan thread can open the device
+        self.stop_camera()
+
+        self._scan_thread = DaemonScanThread(parent=self)
+        self._scan_thread.scan_complete.connect(self._on_daemon_scan_complete)
+        self._scan_thread.start()
+
+    def _on_daemon_abort_requested(self):
+        """Called on the main thread — abort any in-flight scan."""
+        if self._scan_thread and self._scan_thread.isRunning():
+            print("🛑 [MAIN THREAD] Aborting daemon scan...")
+            self._scan_thread.abort()
+
+    def _on_daemon_scan_complete(self, result: str):
+        """Called on the main thread when a scan finishes (any outcome)."""
+        self._last_scan_end = time.time()
+        self._scan_thread = None
+        print(f"[SCAN RESULT] {result}")
+
+        if result == "success":
+            print("✅ Biometric unlock successful.")
+        elif result in ("rejected", "aborted"):
+            print("🛑 Scan cancelled — user may type password manually.")
+        elif result == "failed":
+            print("⚠️ Scan failed (camera error).")
+
+        # Reacquire GUI camera preview if still on a camera page
+        if self.content_stack.currentIndex() in [0, 1]:
+            self.start_camera()
 
     def refresh_dashboard_status(self):
         running = self.is_daemon_running()
@@ -690,12 +743,12 @@ class VisionSightGUI(QMainWindow):
             if os.path.exists(self.log_path):
                 with open(self.log_path, 'r') as f:
                     lines = f.readlines()
-                    last_meaningful = ""
-                    for line in reversed(lines):
-                        if line.strip():
-                            last_meaningful = line
-                            break
-                            
+                last_meaningful = ""
+                for line in reversed(lines):
+                    if line.strip():
+                        last_meaningful = line
+                        break
+
                 if "Lock Detected" in last_meaningful or "System is still locked" in last_meaningful:
                     state = "LOCKED"
                     style = "color: #FFFFFF; background: #FF5555; padding: 0 5px;"
@@ -705,46 +758,45 @@ class VisionSightGUI(QMainWindow):
                 elif "Aborting" in last_meaningful or "cancelled" in last_meaningful or "cooldown" in last_meaningful.lower():
                     state = "COOLDOWN"
                     style = "color: #000000; background: #B026FF; padding: 0 5px;"
-                    
+
             self.status_val.setText(state)
             self.status_val.setStyleSheet(style)
-            
-            # Coordination: Release the camera if daemon needs it, reacquire if on camera pages and daemon is free
+
+            # Camera coordination: yield to daemon when it needs the camera
             if state in ["ACTIVE", "LOCKED"]:
                 self.stop_camera()
             elif state in ["IDLE", "COOLDOWN"]:
                 if self.content_stack.currentIndex() in [0, 1]:
                     self.start_camera()
-            
+
         if os.path.exists(self.log_path):
             with open(self.log_path, 'r') as f:
                 content = f.read()
-                if "Identity Verified" in content and "Verification Failed" in content:
-                    last_fail = content.rfind("Verification Failed")
-                    last_succ = content.rfind("Identity Verified")
-                    
-                    if last_succ > last_fail:
-                        self.auth_result.setText("VERIFIED")
-                        self.auth_result.setStyleSheet("color: #000000; background: #FFD500; padding: 0 5px;")
-                    else:
-                        self.auth_result.setText("REJECTED")
-                        self.auth_result.setStyleSheet("color: #FFFFFF; background: #FF5555; padding: 0 5px;")
-                elif "Identity Verified" in content:
+            if "Identity Verified" in content and "Verification Failed" in content:
+                last_fail = content.rfind("Verification Failed")
+                last_succ = content.rfind("Identity Verified")
+                if last_succ > last_fail:
                     self.auth_result.setText("VERIFIED")
                     self.auth_result.setStyleSheet("color: #000000; background: #FFD500; padding: 0 5px;")
-                elif "Verification Failed" in content:
+                else:
                     self.auth_result.setText("REJECTED")
                     self.auth_result.setStyleSheet("color: #FFFFFF; background: #FF5555; padding: 0 5px;")
-                else:
-                    self.auth_result.setText("NO DATA")
-                    self.auth_result.setStyleSheet("color: #000000; background: transparent;")
-                    self.auth_time.setText("--")
-                    return
-                    
-                mod_time = os.path.getmtime(self.log_path)
-                import datetime
-                dt = datetime.datetime.fromtimestamp(mod_time)
-                self.auth_time.setText("TRIGGERED: " + dt.strftime("%B %d, %I:%M %p").upper())
+            elif "Identity Verified" in content:
+                self.auth_result.setText("VERIFIED")
+                self.auth_result.setStyleSheet("color: #000000; background: #FFD500; padding: 0 5px;")
+            elif "Verification Failed" in content:
+                self.auth_result.setText("REJECTED")
+                self.auth_result.setStyleSheet("color: #FFFFFF; background: #FF5555; padding: 0 5px;")
+            else:
+                self.auth_result.setText("NO DATA")
+                self.auth_result.setStyleSheet("color: #000000; background: transparent;")
+                self.auth_time.setText("--")
+                return
+
+            mod_time = os.path.getmtime(self.log_path)
+            import datetime
+            dt = datetime.datetime.fromtimestamp(mod_time)
+            self.auth_time.setText("TRIGGERED: " + dt.strftime("%B %d, %I:%M %p").upper())
 
     # ----------------------------------------------------
     # PAGE 2: USERS
@@ -1002,12 +1054,32 @@ class VisionSightGUI(QMainWindow):
             self.wiz_video.setPixmap(pm)
 
     def closeEvent(self, event):
+        print("🛑 Shutting down VisionSight...")
+
+        # 1. Stop the status polling timer
         if hasattr(self, 'status_timer') and self.status_timer.isActive():
             self.status_timer.stop()
-            
+
+        # 2. Abort any active biometric scan (short wait — thread is daemon=True)
+        if hasattr(self, '_scan_thread') and self._scan_thread and self._scan_thread.isRunning():
+            self._scan_thread.abort()
+            self._scan_thread.wait(1000)  # 1s max — os._exit handles the rest
+
+        # 3. Stop GUI camera preview
         self.stop_camera()
         cv2.destroyAllWindows()
+
+        # 4. Signal daemon thread to stop (NON-BLOCKING — do NOT join)
+        # The daemon thread is daemon=True so it dies when the process exits.
+        # Calling join() here blocks the main thread and stalls Qt shutdown.
+        if hasattr(self, '_daemon_core') and self._daemon_core:
+            if self._daemon_core._stop_event is not None:
+                self._daemon_core._stop_event.set()  # signal; don't wait
+            self._daemon_core = None
+
+        print("✅ VisionSight shutdown complete.")
         event.accept()
+        QApplication.quit()  # ensure Qt event loop exits cleanly
 
     # ----------------------------------------------------
     # PAGE 3: SETTINGS

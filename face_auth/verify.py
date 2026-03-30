@@ -99,13 +99,21 @@ class FaceVerifier:
 
 
 
-    def authenticate_once(self, system_controller):
+    def authenticate_once(self, system_controller, use_esc_hook: bool = True):
         """
         Returns one of four states:
         - 'success'  : face matched and unlock triggered
         - 'rejected' : user pressed Esc — they want to type password manually
         - 'aborted'  : screen unlocked by other means mid-scan
         - 'failed'   : webcam error
+
+        use_esc_hook: if True, installs a pynput global keyboard hook to catch
+        Esc even across the lock screen. Set to False when calling from a QThread
+        (daemon scan context) — pynput's CGEventTap creation requires a running
+        CFRunLoop on the calling thread and will raise EXC_BAD_INSTRUCTION
+        (SIGTRAP) on macOS Sonoma / Apple Silicon if one is not present.
+        In daemon context, abort is handled via _stop_requested set externally
+        by the Qt abort signal instead.
         """
         print("🟢 CAMERA WARMUP: Booting webcam session...")
         self.cap = cv2.VideoCapture(self.video_source)
@@ -137,24 +145,31 @@ class FaceVerifier:
         self.frames_unauthorized = 0
         self._stop_requested = False
 
-        # Admin-Level Hook: Catch Esc key securely across the entire OS (bypassing Lock Screen event swallowing)
-        def on_press(key):
+        # Admin-Level Hook: Catch Esc key securely across the entire OS.
+        # ONLY installed when use_esc_hook=True (i.e., non-GUI / standalone mode).
+        # In daemon scan mode (QThread), pynput is skipped because:
+        #   1. CGEventTap requires a CFRunLoop on the calling thread (QThread has none)
+        #   2. Abort is already handled via _stop_requested set by the Qt abort signal
+        esc_listener = None
+        if use_esc_hook:
+            def on_press(key):
+                try:
+                    from pynput import keyboard
+                    if key == keyboard.Key.esc:
+                        print("\n🛑 Admin Hardware Hook: Esc key intercepted globally!")
+                        self._stop_requested = True
+                        return False
+                except Exception:
+                    pass
             try:
                 from pynput import keyboard
-                if key == keyboard.Key.esc:
-                    print("\n🛑 Admin Hardware Hook: Esc key intercepted globally!")
-                    self._stop_requested = True
-                    return False  # Kill the keyboard listener
-            except Exception:
-                pass
-
-        try:
-            from pynput import keyboard
-            esc_listener = keyboard.Listener(on_press=on_press)
-            esc_listener.start()
-        except Exception as e:
-            print(f"⚠️ Could not start pynput listener: {e}")
-            esc_listener = None
+                esc_listener = keyboard.Listener(on_press=on_press)
+                esc_listener.start()
+            except Exception as e:
+                print(f"⚠️ Could not start pynput listener: {e}")
+                esc_listener = None
+        else:
+            print("ℹ️ Esc hook skipped (daemon scan mode — abort via Qt signal)")
 
         last_display_check = time.time()
         start_time = time.time()
