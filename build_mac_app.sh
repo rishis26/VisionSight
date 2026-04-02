@@ -1,13 +1,17 @@
 #!/bin/bash
-# build_mac_app.sh — VisionSight Single-Binary DMG Builder v3
+# build_mac_app.sh — VisionSight Single-Binary DMG Builder v4
 # -----------------------------------------------------------
 # GUI and Daemon are now the SAME process (daemon runs as a
 # background thread). No VisionSightDaemon binary is needed.
 set -e
 
 echo "===================================="
-echo "🍏 VISIONSIGHT DMG BUILDER v3 🍏"
+echo "🍏 VISIONSIGHT DMG BUILDER v4 🍏"
 echo "===================================="
+
+# ── Config ────────────────────────────────────────────────────────────────────
+APP="dist/VisionSight.app"
+ENTITLEMENTS="entitlements.plist"
 
 # ── Clean previous builds ─────────────────────────────────────────────────────
 echo "🧹 Cleaning previous builds..."
@@ -16,14 +20,41 @@ sudo rm -rf build dist
 mkdir -p build
 
 # ── Build single binary with PyInstaller ─────────────────────────────────────
-echo "[1/3] Building with PyInstaller (single binary)..."
+echo "[1/5] Building with PyInstaller (single binary)..."
 pyinstaller --noconfirm VisionSight.spec
 
-APP="dist/VisionSight.app"
+# ── Verify critical files exist in bundle ────────────────────────────────────
+echo "[2/5] Verifying bundle contents..."
 
-# ── Patch Info.plist entitlements (belt-and-suspenders) ──────────────────────
-echo "[2/3] Patching Info.plist entitlements..."
+# Check icon is bundled
+if [ ! -f "$APP/Contents/Resources/icon.icns" ]; then
+    echo "⚠️  icon.icns missing from bundle — copying..."
+    cp assets/icon.icns "$APP/Contents/Resources/icon.icns"
+fi
 
+# Check face_recognition models are bundled
+MODEL_COUNT=$(find "$APP" -name "*.dat" | wc -l | tr -d ' ')
+if [ "$MODEL_COUNT" -lt 3 ]; then
+    echo "❌ CRITICAL: Only $MODEL_COUNT .dat model files found in bundle!"
+    echo "   Expected at least 3 (shape_predictor_68, shape_predictor_5, resnet_model)"
+    echo "   The bundled app WILL crash on face recognition. Fix your spec!"
+    # Don't exit — let the user investigate
+else
+    echo "✅ Found $MODEL_COUNT model .dat files in bundle"
+fi
+
+# Check assets/icon.png is bundled (needed for tray icon at runtime)
+ICON_PNG=$(find "$APP" -path "*/assets/icon.png" | head -1)
+if [ -z "$ICON_PNG" ]; then
+    echo "⚠️  assets/icon.png missing from bundle — copying..."
+    mkdir -p "$APP/Contents/MacOS/assets"
+    cp assets/icon.png "$APP/Contents/MacOS/assets/icon.png"
+fi
+
+# ── Patch Info.plist (belt-and-suspenders) ───────────────────────────────────
+echo "[3/5] Patching Info.plist..."
+
+# Camera usage string
 plutil -insert NSCameraUsageDescription \
     -string "VisionSight requires camera access for biometric face authentication." \
     "$APP/Contents/Info.plist" 2>/dev/null || \
@@ -31,6 +62,7 @@ plutil -replace NSCameraUsageDescription \
     -string "VisionSight requires camera access for biometric face authentication." \
     "$APP/Contents/Info.plist"
 
+# Apple Events usage string
 plutil -insert NSAppleEventsUsageDescription \
     -string "VisionSight needs to control keyboard events to unlock your Mac." \
     "$APP/Contents/Info.plist" 2>/dev/null || \
@@ -38,25 +70,68 @@ plutil -replace NSAppleEventsUsageDescription \
     -string "VisionSight needs to control keyboard events to unlock your Mac." \
     "$APP/Contents/Info.plist"
 
+# Ensure LSUIElement is set (tray-only mode, no Dock icon)
+plutil -insert LSUIElement \
+    -bool true \
+    "$APP/Contents/Info.plist" 2>/dev/null || \
+plutil -replace LSUIElement \
+    -bool true \
+    "$APP/Contents/Info.plist"
+
+# Ensure icon file reference
+plutil -insert CFBundleIconFile \
+    -string "icon" \
+    "$APP/Contents/Info.plist" 2>/dev/null || \
+plutil -replace CFBundleIconFile \
+    -string "icon" \
+    "$APP/Contents/Info.plist"
+
+echo "✅ Info.plist patched"
+
 # ── Remove metadata dirs that break codesign ─────────────────────────────────
 find "$APP" -name "*.dist-info" -type d -exec rm -rf {} + 2>/dev/null || true
 find "$APP" -name "*.data"      -type d -exec rm -rf {} + 2>/dev/null || true
+find "$APP" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 xattr -cr "$APP" 2>/dev/null || true
 
 # ── Ad-hoc sign all binaries ──────────────────────────────────────────────────
+echo "[4/5] Code signing..."
+
 echo "🔏 Signing dylibs and .so files..."
-find "$APP" -name "*.dylib" -exec codesign --force --sign - {} \; 2>/dev/null || true
-find "$APP" -name "*.so"    -exec codesign --force --sign - {} \; 2>/dev/null || true
+find "$APP" -name "*.dylib" -exec codesign --force --sign - --entitlements "$ENTITLEMENTS" {} \; 2>/dev/null || true
+find "$APP" -name "*.so"    -exec codesign --force --sign - --entitlements "$ENTITLEMENTS" {} \; 2>/dev/null || true
+
+# Sign all Mach-O binaries (except the main executable — signed separately below)
+MAIN_EXE="$APP/Contents/MacOS/VisionSight"
 find "$APP" -type f | while read f; do
+    if [ "$f" = "$MAIN_EXE" ]; then
+        continue  # Sign last with entitlements
+    fi
     if file "$f" | grep -q "Mach-O"; then
-        codesign --force --sign - "$f" 2>/dev/null || true
+        codesign --force --sign - --entitlements "$ENTITLEMENTS" "$f" 2>/dev/null || true
     fi
 done
 
+# CRITICAL: Sign the main executable EXPLICITLY with entitlements BEFORE the
+# bundle-level sign. --deep only propagates the signing identity, NOT the
+# entitlements. Without this, TCC/WindowServer won't see the camera or
+# accessibility entitlements on the actual VisionSight binary.
+echo "✍️  Signing main executable with entitlements..."
+codesign --force --sign - --entitlements "$ENTITLEMENTS" --timestamp=none "$MAIN_EXE" \
+    && echo "✅ Main executable signed with entitlements!" \
+    || echo "⚠️  Main executable signing warning"
+
 echo "✍️  Signing App Bundle..."
-codesign --force --sign - --timestamp=none --no-strict "$APP" \
+codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" --timestamp=none --no-strict "$APP" \
     && echo "✅ Bundle signed!" \
     || echo "⚠️  Signing warning — continuing anyway"
+
+# Verify signature
+codesign --verify --verbose=2 "$APP" 2>&1 || echo "⚠️  Signature verification note (expected for ad-hoc)"
+
+# Verify entitlements are actually embedded
+echo "🔍 Verifying entitlements on main executable..."
+codesign -d --entitlements - "$MAIN_EXE" 2>&1 | head -20
 
 # ── Embed uninstall helper ────────────────────────────────────────────────────
 cat > "$APP/Contents/Resources/uninstall.sh" << 'EOF'
@@ -74,7 +149,7 @@ EOF
 chmod +x "$APP/Contents/Resources/uninstall.sh"
 
 # ── Create DMG ────────────────────────────────────────────────────────────────
-echo "[3/3] Creating DMG..."
+echo "[5/5] Creating DMG..."
 mkdir -p dist/dmg_staging
 cp -R "$APP" dist/dmg_staging/
 ln -sf /Applications dist/dmg_staging/Applications
@@ -86,13 +161,25 @@ hdiutil create \
     && echo "✅ DMG created!"
 
 # ── Post-install helper ───────────────────────────────────────────────────────
-cat > dist/install_helper.sh << 'EOF'
+cat > dist/install_helper.sh << 'INST_EOF'
 #!/bin/bash
 echo "🔧 Configuring VisionSight..."
+
+# Remove quarantine attribute (blocks ad-hoc signed apps)
 sudo xattr -rd com.apple.quarantine /Applications/VisionSight.app 2>/dev/null || true
+
+# Add to Gatekeeper exceptions
 sudo spctl --add /Applications/VisionSight.app 2>/dev/null || true
+
+# Reset TCC permissions so VisionSight.app gets fresh camera/accessibility prompts
+# (only needed if re-installing over a previous version)
+tccutil reset Camera com.visionsight.app 2>/dev/null || true
+tccutil reset Accessibility com.visionsight.app 2>/dev/null || true
+
 echo "✅ Done! Open VisionSight from Applications."
-EOF
+echo "   → Camera permission will be requested on first launch."
+echo "   → Grant Accessibility access in System Settings for auto-unlock."
+INST_EOF
 chmod +x dist/install_helper.sh
 
 echo ""

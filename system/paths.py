@@ -3,7 +3,8 @@ import sys
 
 def get_base_dir():
     if getattr(sys, 'frozen', False):
-        return sys._MEIPASS
+        # Bundled app — use the .app bundle's Resources folder
+        return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def get_app_data_dir():
@@ -24,6 +25,11 @@ def get_encodings_path():
 
 def get_known_faces_dir():
     return os.path.join(get_app_data_dir(), 'assets', 'known_faces')
-    
+
 def get_icon_path():
-    return os.path.join(get_base_dir(), 'assets', 'icon.png')
+    base = get_base_dir()
+    icon = os.path.join(base, 'assets', 'icon.png')
+    # Fallback to _MEIPASS for bundled assets like icon
+    if not os.path.exists(icon) and getattr(sys, 'frozen', False):
+        icon = os.path.join(sys._MEIPASS, 'assets', 'icon.png')
+    return icon

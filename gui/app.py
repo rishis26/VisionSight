@@ -15,9 +15,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QLabel, QPushButton, QStackedWidget, 
                              QLineEdit, QFrame, QMessageBox, QSpacerItem, QSizePolicy,
                              QListWidget, QSlider, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView,
-                             QGraphicsDropShadowEffect, QStyle)
-from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QThread, pyqtSignal, QSize, pyqtProperty
-from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QPainter, QBrush, QIcon, QPen
+                             QGraphicsDropShadowEffect, QStyle, QSystemTrayIcon, QMenu)
+from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QThread, pyqtSignal, QSize, pyqtProperty, QEvent
+from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QPainter, QBrush, QIcon, QPen, QAction
 from dotenv import load_dotenv, set_key
 
 # Daemon core — runs as a background thread inside this same process
@@ -148,7 +148,7 @@ class DaemonScanThread(QThread):
     This QThread does all the actual camera + face-recognition work.
     """
 
-    scan_complete = pyqtSignal(str)  # result: 'success' | 'rejected' | 'aborted' | 'failed'
+    scan_complete = pyqtSignal(str, str)  # (result, authenticated_username)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -160,17 +160,28 @@ class DaemonScanThread(QThread):
     def run(self):
         """Blocking scan. Runs on this QThread's execution context.
 
+        defer_unlock=True: simulate_unlock() uses CGEventPost(kCGHIDEventTap)
+        which SILENTLY FAILS when called from a background QThread on macOS.
+        We defer the unlock to the main thread via the scan_complete signal.
+
         use_esc_hook=False: skips pynput's CGEventTap which requires a CFRunLoop
         on the calling thread (QThread has none). Abort is handled externally via
         _stop_requested set by the daemon's Qt abort signal.
         """
         try:
             self.verifier.reload_config()
-            result = self.verifier.authenticate_once(self.system, use_esc_hook=False)
+            result = self.verifier.authenticate_once(
+                self.system, use_esc_hook=False, defer_unlock=True
+            )
         except Exception as e:
             print(f"⚠️ DaemonScanThread exception: {e}")
             result = "failed"
-        self.scan_complete.emit(result)
+
+        # Pass username to main thread ONLY if unlock should happen
+        auth_name = ""
+        if result == "success" and self.verifier.AUTO_UNLOCK:
+            auth_name = self.verifier.auth_name or ""
+        self.scan_complete.emit(result, auth_name)
 
     def abort(self):
         """Thread-safe abort: sets a flag the verifier checks each frame."""
@@ -288,12 +299,114 @@ class VisionSightGUI(QMainWindow):
         self._last_scan_end: float = 0.0
 
         self.init_ui()
+        
+        # Setup system tray AFTER UI is initialized
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.setup_tray()
+        else:
+            print("❌ System tray not available on this system!")
+            print("   The app will quit when you close the window.")
+        
         if self.is_onboarding_needed():
             self.sidebar.hide()
             self.content_stack.setCurrentIndex(5)
             self.start_camera()
         else:
             QTimer.singleShot(100, lambda: self.switch_to_page(0))
+            # Auto-start daemon on launch
+            QTimer.singleShot(800, self.start_daemon_thread)
+
+    def setup_tray(self):
+        """Initialize system tray icon for background operation."""
+        print("🔧 Setting up System Tray Icon...")
+        
+        # Create tray icon
+        self.tray_icon = QSystemTrayIcon(self)
+        
+        # Load icon - try multiple approaches for macOS compatibility
+        icon_loaded = False
+        if os.path.exists(self.icon_path):
+            try:
+                # Method 1: Direct QIcon
+                icon = QIcon(self.icon_path)
+                if not icon.isNull():
+                    self.tray_icon.setIcon(icon)
+                    icon_loaded = True
+                    print(f"✅ Loaded icon from: {self.icon_path}")
+            except Exception as e:
+                print(f"⚠️ Failed to load icon: {e}")
+        
+        if not icon_loaded:
+            # Fallback to system icon
+            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+            self.tray_icon.setIcon(icon)
+            print("⚠️ Using system fallback icon")
+        
+        # Create tray menu
+        tray_menu = QMenu()
+        
+        show_action = QAction("Show VisionSight", self)
+        show_action.triggered.connect(self.show_window)
+        tray_menu.addAction(show_action)
+        
+        tray_menu.addSeparator()
+        
+        # Add daemon status
+        self.tray_daemon_action = QAction("Daemon: Checking...", self)
+        self.tray_daemon_action.setEnabled(False)
+        tray_menu.addAction(self.tray_daemon_action)
+        
+        tray_menu.addSeparator()
+        
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self.quit_app)
+        tray_menu.addAction(quit_action)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        
+        # Handle tray icon activation (double-click)
+        self.tray_icon.activated.connect(self.tray_icon_activated)
+        
+        # CRITICAL: Set tooltip so macOS recognizes it
+        self.tray_icon.setToolTip("VisionSight - Face Recognition")
+        
+        # Show the tray icon - MUST be called
+        self.tray_icon.setVisible(True)
+        self.tray_icon.show()
+        
+        # Update daemon status in tray
+        QTimer.singleShot(1000, self.update_tray_daemon_status)
+        
+        # Verify it's visible
+        if self.tray_icon.isVisible():
+            print("✅ System Tray Icon visible in menu bar.")
+        else:
+            print("❌ WARNING: Tray icon failed to show!")
+            print("   This may be a macOS permissions issue.")
+            print("   Try: System Settings → Privacy & Security → Accessibility")
+    
+    def update_tray_daemon_status(self):
+        """Update daemon status in tray menu."""
+        if hasattr(self, 'tray_daemon_action'):
+            if self.is_daemon_running():
+                self.tray_daemon_action.setText("✅ Daemon: Running")
+            else:
+                self.tray_daemon_action.setText("❌ Daemon: Stopped")
+    
+    def tray_icon_activated(self, reason):
+        """Handle tray icon clicks."""
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.show_window()
+    
+    def show_window(self):
+        """Show and activate the main window."""
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        
+        # Restart camera if on a camera page
+        if self.content_stack.currentIndex() in [0, 1, 5]:
+            self.start_camera()
 
     def init_ui(self):
         main_widget = SolidFrame()
@@ -527,14 +640,51 @@ class VisionSightGUI(QMainWindow):
             layout.addWidget(btn)
         
         layout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
-        
-        footer = QLabel("VERSION 4.1\nMAIN TERMINAL")
+
+        # QUIT button — actually terminates the process and daemon
+        btn_quit = QPushButton("⏻  QUIT VISIONSIGHT")
+        btn_quit.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_quit.setFont(QFont(".AppleSystemUIFont", 13, QFont.Weight.Black))
+        btn_quit.setStyleSheet("""
+            QPushButton {
+                text-align: center;
+                padding: 12px 16px;
+                background: #FF5555;
+                color: #FFFFFF;
+                font-size: 13px;
+                font-weight: 900;
+                border: 3px solid #000000;
+                margin-bottom: 10px;
+            }
+            QPushButton:hover { background: #000000; color: #FF5555; }
+            QPushButton:pressed { background: #FF5555; color: #000000; }
+        """)
+        btn_quit.clicked.connect(self.quit_app)
+        apply_shadow(btn_quit, 0, 4, 4, 255, "#000000")
+        layout.addWidget(btn_quit)
+
+        footer = QLabel("VERSION 5.0\nMAIN TERMINAL")
         footer.setFont(QFont(".AppleSystemUIFont", 12, QFont.Weight.Black))
         footer.setStyleSheet("color: #000000; border: 3px solid #000000; padding: 10px; background: #FFD500;")
         footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         apply_shadow(footer, 0, 4, 4, 255, "#000000")
         layout.addWidget(footer)
-        
+
+        # Credit label with clickable GitHub link
+        credit = QLabel('A PROJECT BY<br><a href="https://github.com/rishis26" style="color:#000000; font-weight:900;">RISHI SHAH ↗</a>')
+        credit.setFont(QFont(".AppleSystemUIFont", 11, QFont.Weight.Bold))
+        credit.setStyleSheet("""
+            QLabel {
+                color: #000000;
+                padding: 8px 4px 0px 4px;
+                text-align: center;
+            }
+        """)
+        credit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        credit.setOpenExternalLinks(True)
+        credit.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(credit)
+
         return sidebar
 
     def card_frame(self, bg_color="#FFFFFF"):
@@ -557,10 +707,12 @@ class VisionSightGUI(QMainWindow):
         
         if index == 0:
             self.refresh_dashboard_status()
-            self.start_camera()
+            if self.isVisible():
+                self.start_camera()
         elif index == 1:
             self.refresh_identity_list()
-            self.start_camera() 
+            if self.isVisible():
+                self.start_camera() 
         elif index == 4:
             self.stop_camera()
             self.refresh_logs()
@@ -713,21 +865,36 @@ class VisionSightGUI(QMainWindow):
             print("🛑 [MAIN THREAD] Aborting daemon scan...")
             self._scan_thread.abort()
 
-    def _on_daemon_scan_complete(self, result: str):
-        """Called on the main thread when a scan finishes (any outcome)."""
+    def _on_daemon_scan_complete(self, result: str, user_name: str):
+        """
+        Called on the MAIN THREAD when a scan finishes (any outcome).
+
+        CRITICAL: simulate_unlock() MUST run here (main thread) because
+        CGEventPost(kCGHIDEventTap) silently fails from background QThreads
+        on macOS. The NSApplication run loop thread is the only context where
+        HID-level event posting is honoured by the WindowServer.
+        """
         self._last_scan_end = time.time()
         self._scan_thread = None
-        print(f"[SCAN RESULT] {result}")
+        print(f"[SCAN RESULT] {result} (user: {user_name or 'n/a'})")
 
         if result == "success":
-            print("✅ Biometric unlock successful.")
+            if user_name:
+                # Execute unlock on MAIN THREAD — this is the whole point
+                print(f"✅ Biometric unlock successful — executing simulate_unlock on main thread...")
+                from system.lock import SystemController
+                main_thread_controller = SystemController()
+                main_thread_controller.simulate_unlock(user_name)
+            else:
+                print("✅ Face verified but AUTO UNLOCK is disabled.")
         elif result in ("rejected", "aborted"):
             print("🛑 Scan cancelled — user may type password manually.")
         elif result == "failed":
             print("⚠️ Scan failed (camera error).")
 
-        # Reacquire GUI camera preview if still on a camera page
-        if self.content_stack.currentIndex() in [0, 1]:
+        # Only reacquire GUI camera if the window is visible and on a camera page
+        # (window may be hidden after Cmd+Q — don’t open camera while invisible)
+        if self.isVisible() and self.content_stack.currentIndex() in [0, 1]:
             self.start_camera()
 
     def refresh_dashboard_status(self):
@@ -766,8 +933,12 @@ class VisionSightGUI(QMainWindow):
             if state in ["ACTIVE", "LOCKED"]:
                 self.stop_camera()
             elif state in ["IDLE", "COOLDOWN"]:
-                if self.content_stack.currentIndex() in [0, 1]:
+                # Only restart camera if window is visible
+                if self.isVisible() and self.content_stack.currentIndex() in [0, 1]:
                     self.start_camera()
+        
+        # Update tray icon status
+        self.update_tray_daemon_status()
 
         if os.path.exists(self.log_path):
             with open(self.log_path, 'r') as f:
@@ -1054,32 +1225,92 @@ class VisionSightGUI(QMainWindow):
             self.wiz_video.setPixmap(pm)
 
     def closeEvent(self, event):
-        print("🛑 Shutting down VisionSight...")
-
-        # 1. Stop the status polling timer
-        if hasattr(self, 'status_timer') and self.status_timer.isActive():
-            self.status_timer.stop()
-
-        # 2. Abort any active biometric scan (short wait — thread is daemon=True)
-        if hasattr(self, '_scan_thread') and self._scan_thread and self._scan_thread.isRunning():
-            self._scan_thread.abort()
-            self._scan_thread.wait(1000)  # 1s max — os._exit handles the rest
-
-        # 3. Stop GUI camera preview
+        """
+        Override close event to hide window instead of quitting.
+        The daemon keeps running in the background. Use the tray icon to quit.
+        """
+        # If no tray icon, allow normal close
+        if not hasattr(self, 'tray_icon') or not self.tray_icon.isVisible():
+            print("⚠️ No system tray - performing normal quit")
+            self.quit_app()
+            return
+        
+        print("🔴 Window closing — hiding to system tray...")
+        
+        # Stop camera to save resources while hidden
         self.stop_camera()
         cv2.destroyAllWindows()
+        
+        # Hide window instead of closing
+        self.hide()
+        
+        # Show tray notification on first hide
+        if not hasattr(self, '_first_hide_done'):
+            self.tray_icon.showMessage(
+                "VisionSight",
+                "App is running in the background. Click the tray icon to open.",
+                QSystemTrayIcon.MessageIcon.Information,
+                2000
+            )
+            self._first_hide_done = True
+        
+        # Prevent Qt from closing the application
+        event.ignore()
+    
+    def installQuitFilter(self, qapp):
+        """Install an event filter on QApplication so Cmd+Q hides to tray
+        instead of terminating.  macOS sends QEvent::Quit directly to
+        QApplication (bypassing QMainWindow.closeEvent), so this is the
+        ONLY reliable interception point."""
+        self._qapp = qapp
+        qapp.installEventFilter(self)
 
-        # 4. Signal daemon thread to stop (NON-BLOCKING — do NOT join)
-        # The daemon thread is daemon=True so it dies when the process exits.
-        # Calling join() here blocks the main thread and stalls Qt shutdown.
-        if hasattr(self, '_daemon_core') and self._daemon_core:
-            if self._daemon_core._stop_event is not None:
-                self._daemon_core._stop_event.set()  # signal; don't wait
-            self._daemon_core = None
+    def eventFilter(self, obj, event):
+        """Catch QEvent::Quit sent to QApplication (Cmd+Q / applicationShouldTerminate)."""
+        if obj is self._qapp and event.type() == QEvent.Type.Quit:
+            # If tray is available, just hide the window — don't quit
+            if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
+                self.closeEvent(type('FakeCloseEvent', (), {'ignore': lambda s: None, 'accept': lambda s: None})())
+                return True  # swallow the Quit event
+        return super().eventFilter(obj, event)
 
-        print("✅ VisionSight shutdown complete.")
-        event.accept()
-        QApplication.quit()  # ensure Qt event loop exits cleanly
+    def quit_app(self):
+        """
+        Full teardown — called by the ⏻ QUIT button or tray Quit.
+        MUST use try/finally so os._exit(0) is always reached.
+        Qt silently swallows exceptions thrown inside slots, so without
+        try/finally any error before os._exit(0) would cause a silent no-op.
+        """
+        print("🛑 Shutting down VisionSight completely...")
+        try:
+            # 1. Stop status timer
+            if hasattr(self, 'status_timer') and self.status_timer.isActive():
+                self.status_timer.stop()
+
+            # 2. Abort any active biometric scan (non-blocking abort)
+            if hasattr(self, '_scan_thread') and self._scan_thread and self._scan_thread.isRunning():
+                self._scan_thread.abort()
+                self._scan_thread.wait(800)
+
+            # 3. Stop GUI camera
+            self.stop_camera()
+            cv2.destroyAllWindows()
+
+            # 4. Stop daemon thread cleanly via DaemonCore.stop()
+            if hasattr(self, '_daemon_core') and self._daemon_core:
+                self._daemon_core.stop()
+                self._daemon_core = None
+
+            # 5. Hide tray icon before exit
+            if hasattr(self, 'tray_icon'):
+                self.tray_icon.hide()
+
+            print("✅ VisionSight terminated.")
+        except Exception as e:
+            print(f"⚠️ quit_app cleanup error (ignored): {e}")
+        finally:
+            # Hard exit — always runs, kills all threads including daemon
+            os._exit(0)
 
     # ----------------------------------------------------
     # PAGE 3: SETTINGS
@@ -1456,8 +1687,81 @@ class VisionSightGUI(QMainWindow):
             self.refresh_logs()
 
 if __name__ == "__main__":
+    # ── Frozen-mode (PyInstaller .app) setup ──────────────────────────────────
+    # When running as a bundled .app with LSUIElement=True, PyInstaller's
+    # bootloader creates the NSApplication instance before Python runs.
+    # We must explicitly set the activation policy to Accessory to ensure
+    # the system tray icon appears while staying out of the Dock.
+    
+    if getattr(sys, 'frozen', False):
+        # Redirect stdout/stderr to log file FIRST
+        import system.paths as _log_paths
+        _log_file_path = _log_paths.get_log_path()
+        _log_file = open(_log_file_path, 'a', buffering=1)
+        sys.stdout = _log_file
+        sys.stderr = _log_file
+        print("=" * 50)
+        print("VisionSight bundled app started")
+        print("=" * 50)
+
+        try:
+            from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+            ns_app = NSApplication.sharedApplication()
+            ns_app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+            print("✅ [FROZEN] NSApplication policy set to Accessory")
+        except Exception as e:
+            print(f"⚠️ [FROZEN] Could not set activation policy: {e}")
+
+        # ── AVFoundation camera probe ─────────────────────────────────────
+        # macOS TCC only triggers the camera permission dialog when it sees an
+        # AVFoundation device-discovery call from a properly bundled .app.
+        # OpenCV's cv2.VideoCapture uses AVFoundation internally, but in a
+        # PyInstaller bundle the framework may not be loaded early enough for
+        # TCC to recognize the access attempt. This explicit probe ensures:
+        #   1. AVFoundation framework is loaded into the process
+        #   2. TCC sees the camera authorization request from our bundle ID
+        #   3. The permission dialog appears on first launch
+        try:
+            import AVFoundation
+            auth_status = AVFoundation.AVCaptureDevice.authorizationStatusForMediaType_(
+                AVFoundation.AVMediaTypeVideo
+            )
+            print(f"📷 [FROZEN] Camera auth status: {auth_status}")
+            # 0 = NotDetermined → request permission
+            # 1 = Restricted, 2 = Denied, 3 = Authorized
+            if auth_status == 0:
+                print("📷 [FROZEN] Requesting camera permission via AVFoundation...")
+                # This triggers the native macOS camera permission dialog
+                AVFoundation.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+                    AVFoundation.AVMediaTypeVideo,
+                    lambda granted: print(f"📷 Camera permission {'granted' if granted else 'denied'}")
+                )
+            elif auth_status == 3:
+                print("📷 [FROZEN] Camera already authorized")
+            else:
+                print(f"⚠️ [FROZEN] Camera not authorized (status={auth_status})")
+        except Exception as e:
+            print(f"⚠️ [FROZEN] AVFoundation probe failed: {e}")
+
+        print(f"📂 [FROZEN] _MEIPASS = {sys._MEIPASS}")
+
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)  # Allow background execution when GUI is hidden
+
+    # Set app icon on QApplication (required for bundled .app — QMainWindow icon
+    # alone is not enough, macOS reads it from the QApplication instance)
+    import system.paths as _paths
+    _icon_path = _paths.get_icon_path()
+    if os.path.exists(_icon_path):
+        app.setWindowIcon(QIcon(_icon_path))
+        print(f"✅ QApplication icon set from: {_icon_path}")
+    else:
+        print(f"⚠️ Icon not found at: {_icon_path}")
+
     window = VisionSightGUI()
+    # Install Cmd+Q interceptor BEFORE showing the window
+    window.installQuitFilter(app)
     window.show()
     app.exec()
     os._exit(0)
+

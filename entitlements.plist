@@ -23,5 +23,13 @@
     <!-- Allows loading unsigned dylibs (needed for cv2, dlib, face_recognition) -->
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
+
+    <!-- Allow DYLD env vars — required for PyInstaller frozen bundles on Sonoma+ -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+
+    <!-- Allow JIT (needed by dlib/numpy on ARM for JIT-compiled routines) -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
 </dict>
 </plist>

@@ -82,31 +82,51 @@ class SystemController:
                 subprocess.Popen(['caffeinate', '-u', '-t', '2'])
                 mac_password = self._get_secure_password()
                 if mac_password:
+                    # CRITICAL: Use kCGEventSourceStatePrivate so WindowServer
+                    # accepts HID events from an LSUIElement / ad-hoc signed app.
+                    # Using None (kCGEventSourceStateHIDSystemState) is silently
+                    # rejected by macOS Sonoma+ for non-frontmost processes.
+                    source = Quartz.CGEventSourceCreate(
+                        Quartz.kCGEventSourceStatePrivate
+                    )
+
                     # Wake screen via Spacebar
-                    space_down = Quartz.CGEventCreateKeyboardEvent(None, 49, True)
+                    space_down = Quartz.CGEventCreateKeyboardEvent(source, 49, True)
                     Quartz.CGEventPost(Quartz.kCGHIDEventTap, space_down)
-                    space_up = Quartz.CGEventCreateKeyboardEvent(None, 49, False)
+                    space_up = Quartz.CGEventCreateKeyboardEvent(source, 49, False)
                     Quartz.CGEventPost(Quartz.kCGHIDEventTap, space_up)
                     
-                    time.sleep(0.15) # Wait a tiny fraction of a second for UI to wake up
+                    # Sonoma's lock screen takes longer to render the password
+                    # field — 0.3s is too fast, 0.8s is reliable.
+                    time.sleep(0.8)
                     
-                    # Instantly type the password using C-level Unicode keyboard events
+                    # Type password at HID level — kCGHIDEventTap is the ONLY tap
+                    # that works at the lock screen. kCGSessionEventTap is silently
+                    # blocked by macOS when the session is locked.
                     for char in mac_password:
                         uni_char = ord(char)
-                        event_down = Quartz.CGEventCreateKeyboardEvent(None, 0, True)
+                        event_down = Quartz.CGEventCreateKeyboardEvent(source, 0, True)
                         Quartz.CGEventKeyboardSetUnicodeString(event_down, 1, chr(uni_char))
-                        Quartz.CGEventPost(Quartz.kCGSessionEventTap, event_down)
-                        event_up = Quartz.CGEventCreateKeyboardEvent(None, 0, False)
+                        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_down)
+                        time.sleep(0.03)
+                        event_up = Quartz.CGEventCreateKeyboardEvent(source, 0, False)
                         Quartz.CGEventKeyboardSetUnicodeString(event_up, 1, chr(uni_char))
-                        Quartz.CGEventPost(Quartz.kCGSessionEventTap, event_up)
+                        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_up)
+                        time.sleep(0.03)  # 30ms inter-char delay for HID reliability
                         
+                    # Small gap before Enter so the password field processes
+                    # the last character before submission
+                    time.sleep(0.1)
+
                     # Press Enter to login
-                    enter_down = Quartz.CGEventCreateKeyboardEvent(None, 36, True)
+                    enter_down = Quartz.CGEventCreateKeyboardEvent(source, 36, True)
                     Quartz.CGEventPost(Quartz.kCGHIDEventTap, enter_down)
-                    enter_up = Quartz.CGEventCreateKeyboardEvent(None, 36, False)
+                    enter_up = Quartz.CGEventCreateKeyboardEvent(source, 36, False)
                     Quartz.CGEventPost(Quartz.kCGHIDEventTap, enter_up)
 
                     print('Unlock sequence complete!')
+                else:
+                    print('⚠️ No password in Keychain — cannot unlock.')
             except Exception as e:
                 print(f'Unlock error: {e}')
             self.last_unlock_time = time.time()

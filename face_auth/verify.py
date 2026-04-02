@@ -99,7 +99,7 @@ class FaceVerifier:
 
 
 
-    def authenticate_once(self, system_controller, use_esc_hook: bool = True):
+    def authenticate_once(self, system_controller, use_esc_hook: bool = True, defer_unlock: bool = False):
         """
         Returns one of four states:
         - 'success'  : face matched and unlock triggered
@@ -114,6 +114,11 @@ class FaceVerifier:
         (SIGTRAP) on macOS Sonoma / Apple Silicon if one is not present.
         In daemon context, abort is handled via _stop_requested set externally
         by the Qt abort signal instead.
+
+        defer_unlock: if True, skips calling simulate_unlock() and lets the
+        caller handle it. Required when running on a QThread because
+        CGEventPost(kCGHIDEventTap) silently fails from background threads
+        on macOS — the unlock MUST happen on the main/NSApplication thread.
         """
         print("🟢 CAMERA WARMUP: Booting webcam session...")
         self.cap = cv2.VideoCapture(self.video_source)
@@ -281,8 +286,10 @@ class FaceVerifier:
                                 esc_listener.stop()
 
                             # Then unlock ONLY if enabled in GUI config
-                            if self.AUTO_UNLOCK:
+                            if self.AUTO_UNLOCK and not defer_unlock:
                                 system_controller.simulate_unlock(name)
+                            elif self.AUTO_UNLOCK and defer_unlock:
+                                print(f"✅ Access granted to {name}. Unlock deferred to main thread.")
                             else:
                                 print(f"✅ Access granted to {name}, but AUTO UNLOCK is disabled. Awaiting manual password entry.")
                                 
