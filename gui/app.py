@@ -1693,6 +1693,18 @@ if __name__ == "__main__":
     # We must explicitly set the activation policy to Accessory to ensure
     # the system tray icon appears while staying out of the Dock.
     
+    # ── macOS Activation Policy (Hide from Dock) ──────────────────────────────
+    # Set the app to "Accessory" mode so it doesn't show up in the Dock/Switcher,
+    # but still shows the system tray icon.
+    try:
+        from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+        ns_app = NSApplication.sharedApplication()
+        ns_app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+        print("✅ NSApplication policy set to Accessory (Hidden from Dock)")
+    except Exception as e:
+        # This will fail gracefully on non-macOS or if pyobjc is not installed
+        print(f"⚠️ Could not set activation policy: {e}")
+
     if getattr(sys, 'frozen', False):
         # Redirect stdout/stderr to log file FIRST
         import system.paths as _log_paths
@@ -1703,14 +1715,6 @@ if __name__ == "__main__":
         print("=" * 50)
         print("VisionSight bundled app started")
         print("=" * 50)
-
-        try:
-            from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
-            ns_app = NSApplication.sharedApplication()
-            ns_app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-            print("✅ [FROZEN] NSApplication policy set to Accessory")
-        except Exception as e:
-            print(f"⚠️ [FROZEN] Could not set activation policy: {e}")
 
         # ── AVFoundation camera probe ─────────────────────────────────────
         # macOS TCC only triggers the camera permission dialog when it sees an

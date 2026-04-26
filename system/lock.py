@@ -75,59 +75,165 @@ class SystemController:
             return False
 
     def simulate_unlock(self, user_name):
-        if self._is_macos_locked():
-            print(f'Access Granted to {user_name}. Waking Mac...')
-            try:
-                # Run caffeinate in the background so it doesn't block for 2 seconds
-                subprocess.Popen(['caffeinate', '-u', '-t', '2'])
-                mac_password = self._get_secure_password()
-                if mac_password:
-                    # CRITICAL: Use kCGEventSourceStatePrivate so WindowServer
-                    # accepts HID events from an LSUIElement / ad-hoc signed app.
-                    # Using None (kCGEventSourceStateHIDSystemState) is silently
-                    # rejected by macOS Sonoma+ for non-frontmost processes.
-                    source = Quartz.CGEventSourceCreate(
-                        Quartz.kCGEventSourceStatePrivate
+        """
+        Unlock the Mac lock screen by typing the stored password.
+
+        On Sonoma, CGEventPost(kCGHIDEventTap) is silently filtered for
+        LSUIElement (background-only) apps. The fix: temporarily switch
+        the activation policy to Regular (foreground) before posting
+        events, then switch back to Accessory after. This makes
+        WindowServer reclassify the process as foreground-capable.
+        """
+        if not self._is_macos_locked():
+            return True
+
+        print(f'Access Granted to {user_name}. Waking Mac...')
+        try:
+            mac_password = self._get_secure_password()
+            if not mac_password:
+                print('⚠️ No password in Keychain — cannot unlock.')
+                return False
+
+            # Keep display awake for the entire unlock sequence
+            subprocess.Popen(['caffeinate', '-u', '-t', '5'])
+
+            import sys
+            is_bundled = getattr(sys, 'frozen', False)
+
+            if is_bundled:
+                print('📦 [BUNDLED] Switching to foreground policy for HID injection...')
+                try:
+                    from AppKit import (
+                        NSApplication,
+                        NSApplicationActivationPolicyRegular,
+                        NSApplicationActivationPolicyAccessory
                     )
+                    ns_app = NSApplication.sharedApplication()
+                    # Switch to foreground — allows CGEventPost through
+                    ns_app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+                    print('🔄 Activation policy → Regular (foreground)')
+                    time.sleep(0.1)  # Let WindowServer process the change
 
-                    # Wake screen via Spacebar
-                    space_down = Quartz.CGEventCreateKeyboardEvent(source, 49, True)
-                    Quartz.CGEventPost(Quartz.kCGHIDEventTap, space_down)
-                    space_up = Quartz.CGEventCreateKeyboardEvent(source, 49, False)
-                    Quartz.CGEventPost(Quartz.kCGHIDEventTap, space_up)
-                    
-                    # Sonoma's lock screen takes longer to render the password
-                    # field — 0.3s is too fast, 0.8s is reliable.
-                    time.sleep(0.8)
-                    
-                    # Type password at HID level — kCGHIDEventTap is the ONLY tap
-                    # that works at the lock screen. kCGSessionEventTap is silently
-                    # blocked by macOS when the session is locked.
-                    for char in mac_password:
-                        uni_char = ord(char)
-                        event_down = Quartz.CGEventCreateKeyboardEvent(source, 0, True)
-                        Quartz.CGEventKeyboardSetUnicodeString(event_down, 1, chr(uni_char))
-                        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_down)
-                        time.sleep(0.03)
-                        event_up = Quartz.CGEventCreateKeyboardEvent(source, 0, False)
-                        Quartz.CGEventKeyboardSetUnicodeString(event_up, 1, chr(uni_char))
-                        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event_up)
-                        time.sleep(0.03)  # 30ms inter-char delay for HID reliability
-                        
-                    # Small gap before Enter so the password field processes
-                    # the last character before submission
-                    time.sleep(0.1)
+                    success = self._inject_direct(mac_password)
 
-                    # Press Enter to login
-                    enter_down = Quartz.CGEventCreateKeyboardEvent(source, 36, True)
-                    Quartz.CGEventPost(Quartz.kCGHIDEventTap, enter_down)
-                    enter_up = Quartz.CGEventCreateKeyboardEvent(source, 36, False)
-                    Quartz.CGEventPost(Quartz.kCGHIDEventTap, enter_up)
+                    # Switch back to background (tray-only)
+                    ns_app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+                    print('🔄 Activation policy → Accessory (background)')
+                except Exception as e:
+                    print(f'⚠️ Policy switch failed: {e} — trying direct anyway')
+                    success = self._inject_direct(mac_password)
+            else:
+                print('🐍 [DEV] Using direct CGEventPost...')
+                success = self._inject_direct(mac_password)
 
-                    print('Unlock sequence complete!')
-                else:
-                    print('⚠️ No password in Keychain — cannot unlock.')
-            except Exception as e:
-                print(f'Unlock error: {e}')
+            if success:
+                print('✅ Unlock sequence dispatched.')
+            else:
+                print('⚠️ Unlock sequence may have failed.')
+
             self.last_unlock_time = time.time()
+            return success
+
+        except Exception as e:
+            print(f'Unlock error: {e}')
+            self.last_unlock_time = time.time()
+            return False
+
+    # ── Bundled mode: osascript bridge ────────────────────────────────────
+
+    @staticmethod
+    def _escape_for_applescript(s):
+        """Escape a string for safe embedding inside AppleScript double quotes.
+
+        AppleScript string literals use " as delimiter and \\ as escape.
+        Characters that must be escaped:   \\ → \\\\    \" → \\"
+        All other characters (including ', spaces, !, @, etc.) are safe
+        inside AppleScript double-quoted strings without escaping.
+        """
+        return s.replace('\\', '\\\\').replace('"', '\\"')
+
+    def _inject_via_helper(self, password):
+        """
+        Run the compiled unlock_helper binary to type the password.
+
+        unlock_helper is a tiny C binary (NOT LSUIElement) that calls
+        CGEventPost(kCGHIDEventTap) natively. WindowServer allows its
+        HID events through to loginwindow because it's classified as a
+        foreground-capable process.
+
+        Password is piped via stdin — never in the process list.
+
+        The binary is bundled at Contents/MacOS/unlock_helper in the .app.
+        """
+        import sys
+
+        # Find the helper binary next to the main executable
+        helper_path = os.path.join(os.path.dirname(sys.executable), 'unlock_helper')
+
+        if not os.path.exists(helper_path):
+            # Fallback: check project directory (dev builds)
+            helper_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), 'unlock_helper'
+            )
+
+        if not os.path.exists(helper_path):
+            print(f'⚠️ unlock_helper not found — falling back to direct CGEventPost')
+            return self._inject_direct(password)
+
+        try:
+            result = subprocess.run(
+                [helper_path],
+                input=password + '\n',
+                capture_output=True,
+                text=True,
+                timeout=12,
+            )
+            if result.returncode == 0:
+                return True
+
+            stderr = result.stderr.strip()
+            print(f'⚠️ unlock_helper error (rc={result.returncode}): {stderr}')
+            print('🔄 Falling back to direct CGEventPost...')
+            return self._inject_direct(password)
+
+        except subprocess.TimeoutExpired:
+            print('⚠️ unlock_helper timed out (12s)')
+            return False
+        except PermissionError:
+            print('⚠️ unlock_helper not executable — falling back')
+            return self._inject_direct(password)
+
+    # ── Dev mode: direct CGEventPost ─────────────────────────────────────
+
+    def _inject_direct(self, password):
+        """
+        Direct CGEventPost — works from non-LSUIElement processes only.
+        Used in dev mode (python3 gui/app.py) and as a last-resort fallback.
+        """
+        source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStatePrivate)
+        tap = Quartz.kCGHIDEventTap
+
+        # Spacebar wake
+        for down in (True, False):
+            ev = Quartz.CGEventCreateKeyboardEvent(source, 49, down)
+            Quartz.CGEventPost(tap, ev)
+
+        time.sleep(0.8)
+
+        # Type password
+        for char in password:
+            for down in (True, False):
+                ev = Quartz.CGEventCreateKeyboardEvent(source, 0, down)
+                Quartz.CGEventKeyboardSetUnicodeString(ev, 1, char)
+                Quartz.CGEventPost(tap, ev)
+                time.sleep(0.02)
+
+        time.sleep(0.05)
+
+        # Enter
+        for down in (True, False):
+            ev = Quartz.CGEventCreateKeyboardEvent(source, 36, down)
+            Quartz.CGEventPost(tap, ev)
+
         return True
+

@@ -19,12 +19,25 @@ hdiutil detach /Volumes/VisionSight -force 2>/dev/null || true
 sudo rm -rf build dist
 mkdir -p build
 
+# ── Compile unlock_helper (HID injection helper) ─────────────────────────────
+echo "[1/6] Compiling unlock_helper..."
+clang -O2 -o build/unlock_helper system/unlock_helper.c \
+    -framework CoreGraphics -framework CoreFoundation \
+    -arch arm64 \
+    && echo "✅ unlock_helper compiled" \
+    || { echo "❌ unlock_helper compilation failed!"; exit 1; }
+
 # ── Build single binary with PyInstaller ─────────────────────────────────────
-echo "[1/5] Building with PyInstaller (single binary)..."
+echo "[2/6] Building with PyInstaller (single binary)..."
 pyinstaller --noconfirm VisionSight.spec
 
 # ── Verify critical files exist in bundle ────────────────────────────────────
-echo "[2/5] Verifying bundle contents..."
+echo "[3/6] Verifying bundle contents..."
+
+# Copy unlock_helper into the app bundle (next to the main executable)
+cp build/unlock_helper "$APP/Contents/MacOS/unlock_helper"
+chmod +x "$APP/Contents/MacOS/unlock_helper"
+echo "✅ unlock_helper bundled at Contents/MacOS/unlock_helper"
 
 # Check icon is bundled
 if [ ! -f "$APP/Contents/Resources/icon.icns" ]; then
@@ -52,7 +65,7 @@ if [ -z "$ICON_PNG" ]; then
 fi
 
 # ── Patch Info.plist (belt-and-suspenders) ───────────────────────────────────
-echo "[3/5] Patching Info.plist..."
+echo "[4/6] Patching Info.plist..."
 
 # Camera usage string
 plutil -insert NSCameraUsageDescription \
@@ -95,7 +108,7 @@ find "$APP" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 xattr -cr "$APP" 2>/dev/null || true
 
 # ── Ad-hoc sign all binaries ──────────────────────────────────────────────────
-echo "[4/5] Code signing..."
+echo "[5/6] Code signing..."
 
 echo "🔏 Signing dylibs and .so files..."
 find "$APP" -name "*.dylib" -exec codesign --force --sign - --entitlements "$ENTITLEMENTS" {} \; 2>/dev/null || true
@@ -149,7 +162,7 @@ EOF
 chmod +x "$APP/Contents/Resources/uninstall.sh"
 
 # ── Create DMG ────────────────────────────────────────────────────────────────
-echo "[5/5] Creating DMG..."
+echo "[6/6] Creating DMG..."
 mkdir -p dist/dmg_staging
 cp -R "$APP" dist/dmg_staging/
 ln -sf /Applications dist/dmg_staging/Applications
