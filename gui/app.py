@@ -300,13 +300,6 @@ class VisionSightGUI(QMainWindow):
 
         self.init_ui()
         
-        # Setup system tray AFTER UI is initialized
-        if QSystemTrayIcon.isSystemTrayAvailable():
-            self.setup_tray()
-        else:
-            print("❌ System tray not available on this system!")
-            print("   The app will quit when you close the window.")
-        
         if self.is_onboarding_needed():
             self.sidebar.hide()
             self.content_stack.setCurrentIndex(5)
@@ -315,98 +308,6 @@ class VisionSightGUI(QMainWindow):
             QTimer.singleShot(100, lambda: self.switch_to_page(0))
             # Auto-start daemon on launch
             QTimer.singleShot(800, self.start_daemon_thread)
-
-    def setup_tray(self):
-        """Initialize system tray icon for background operation."""
-        print("🔧 Setting up System Tray Icon...")
-        
-        # Create tray icon
-        self.tray_icon = QSystemTrayIcon(self)
-        
-        # Load icon - try multiple approaches for macOS compatibility
-        icon_loaded = False
-        if os.path.exists(self.icon_path):
-            try:
-                # Method 1: Direct QIcon
-                icon = QIcon(self.icon_path)
-                if not icon.isNull():
-                    self.tray_icon.setIcon(icon)
-                    icon_loaded = True
-                    print(f"✅ Loaded icon from: {self.icon_path}")
-            except Exception as e:
-                print(f"⚠️ Failed to load icon: {e}")
-        
-        if not icon_loaded:
-            # Fallback to system icon
-            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
-            self.tray_icon.setIcon(icon)
-            print("⚠️ Using system fallback icon")
-        
-        # Create tray menu
-        tray_menu = QMenu()
-        
-        show_action = QAction("Show VisionSight", self)
-        show_action.triggered.connect(self.show_window)
-        tray_menu.addAction(show_action)
-        
-        tray_menu.addSeparator()
-        
-        # Add daemon status
-        self.tray_daemon_action = QAction("Daemon: Checking...", self)
-        self.tray_daemon_action.setEnabled(False)
-        tray_menu.addAction(self.tray_daemon_action)
-        
-        tray_menu.addSeparator()
-        
-        quit_action = QAction("Quit", self)
-        quit_action.triggered.connect(self.quit_app)
-        tray_menu.addAction(quit_action)
-        
-        self.tray_icon.setContextMenu(tray_menu)
-        
-        # Handle tray icon activation (double-click)
-        self.tray_icon.activated.connect(self.tray_icon_activated)
-        
-        # CRITICAL: Set tooltip so macOS recognizes it
-        self.tray_icon.setToolTip("VisionSight - Face Recognition")
-        
-        # Show the tray icon - MUST be called
-        self.tray_icon.setVisible(True)
-        self.tray_icon.show()
-        
-        # Update daemon status in tray
-        QTimer.singleShot(1000, self.update_tray_daemon_status)
-        
-        # Verify it's visible
-        if self.tray_icon.isVisible():
-            print("✅ System Tray Icon visible in menu bar.")
-        else:
-            print("❌ WARNING: Tray icon failed to show!")
-            print("   This may be a macOS permissions issue.")
-            print("   Try: System Settings → Privacy & Security → Accessibility")
-    
-    def update_tray_daemon_status(self):
-        """Update daemon status in tray menu."""
-        if hasattr(self, 'tray_daemon_action'):
-            if self.is_daemon_running():
-                self.tray_daemon_action.setText("✅ Daemon: Running")
-            else:
-                self.tray_daemon_action.setText("❌ Daemon: Stopped")
-    
-    def tray_icon_activated(self, reason):
-        """Handle tray icon clicks."""
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self.show_window()
-    
-    def show_window(self):
-        """Show and activate the main window."""
-        self.show()
-        self.raise_()
-        self.activateWindow()
-        
-        # Restart camera if on a camera page
-        if self.content_stack.currentIndex() in [0, 1, 5]:
-            self.start_camera()
 
     def init_ui(self):
         main_widget = SolidFrame()
