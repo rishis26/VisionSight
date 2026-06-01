@@ -5,7 +5,7 @@ import subprocess
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
                              QSpacerItem, QSizePolicy, QListWidget, QSlider, QComboBox, 
                              QTableWidget, QTableWidgetItem, QHeaderView, QStackedWidget, 
-                             QMessageBox, QFrame)
+                             QMessageBox, QFrame, QScrollArea)
 from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QFont, QPixmap, QColor
 from gui.widgets import apply_shadow, SolidFrame, ToggleButton, StyledButton
@@ -19,7 +19,7 @@ class DashboardPage(QWidget):
     def init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(30)
+        layout.setSpacing(20)
 
         header = QLabel("SYSTEM OVERVIEW")
         header.setFont(QFont(".AppleSystemUIFont", 40, QFont.Weight.Black))
@@ -101,7 +101,7 @@ class IdentitiesPage(QWidget):
     def init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(30)
+        layout.setSpacing(20)
         
         header = QLabel("IDENTITIES")
         header.setFont(QFont(".AppleSystemUIFont", 40, QFont.Weight.Black))
@@ -205,7 +205,7 @@ class IdentitiesPage(QWidget):
 
         split_layout.addWidget(left_pane)
         split_layout.addWidget(right_pane)
-        layout.addLayout(split_layout)
+        layout.addLayout(split_layout, 1)
         
         self.identity_list.itemSelectionChanged.connect(self.controller.show_identity_preview)
         self.name_input.textChanged.connect(lambda: self.identity_list.clearSelection())
@@ -220,7 +220,7 @@ class SettingsPage(QWidget):
     def init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(30)
+        layout.setSpacing(20)
         
         header_layout = QHBoxLayout()
         header = QLabel("CONFIGURATION")
@@ -333,7 +333,7 @@ class SettingsPage(QWidget):
         form_layout.addWidget(self.controller.create_setting_row("AUTO UNLOCK", "INJECT PASSWORD", self.auto_unlock_toggle))
 
         form_layout.addStretch()
-        layout.addWidget(card)
+        layout.addWidget(card, 1)
 
 
 class SecurityPage(QWidget):
@@ -345,8 +345,8 @@ class SecurityPage(QWidget):
     def init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(30)
-        
+        layout.setSpacing(20)
+
         header_layout = QHBoxLayout()
         header = QLabel("SYSTEM SECURITY")
         header.setFont(QFont(".AppleSystemUIFont", 40, QFont.Weight.Black))
@@ -354,46 +354,137 @@ class SecurityPage(QWidget):
         header_layout.addWidget(header)
         header_layout.addStretch()
         layout.addLayout(header_layout)
-        
-        card = self.controller.card_frame("#FFFFFF")
-        form_layout = QVBoxLayout(card)
-        form_layout.setContentsMargins(40, 40, 40, 40)
-        form_layout.setSpacing(25)
 
+        # ── Outer card (border + shadow) ──────────────────────────────────────
+        card = self.controller.card_frame("#FFFFFF")
+        card_outer_layout = QVBoxLayout(card)
+        card_outer_layout.setContentsMargins(0, 0, 0, 0)
+        card_outer_layout.setSpacing(0)
+
+        # ── Scroll area inside the card ───────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("""
+            QScrollArea { background: transparent; border: none; }
+            QScrollBar:vertical {
+                background: #F0F0F0;
+                width: 8px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #CCCCCC;
+                border-radius: 4px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover { background: #999999; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+        """)
+
+        inner = QWidget()
+        inner.setStyleSheet("background: transparent;")
+        form_layout = QVBoxLayout(inner)
+        form_layout.setContentsMargins(40, 30, 40, 30)
+        form_layout.setSpacing(16)
+
+        # ── Keychain section ──────────────────────────────────────────────────
         info = QLabel("VISIONSIGHT KEYCHAIN ACCESS")
-        info.setFont(QFont(".AppleSystemUIFont", 24, QFont.Weight.Black))
+        info.setFont(QFont(".AppleSystemUIFont", 22, QFont.Weight.Black))
         info.setStyleSheet("color: #000000;")
         form_layout.addWidget(info)
-        
-        desc = QLabel("Your Mac password is required to bypass the Lock Screen immediately upon facial recognition.\nThis string is natively routed and encrypted deep inside the macOS Apple Keychain hardware enclave.\nIt is strictly read-only by the Daemon and is never written to disk or transmitted.")
-        desc.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Bold))
-        desc.setStyleSheet("color: #4B5563; line-height: 1.5;")
+
+        desc = QLabel(
+            "Your Mac password is required to bypass the Lock Screen immediately upon facial recognition. "
+            "This string is natively routed and encrypted deep inside the macOS Apple Keychain hardware enclave. "
+            "It is strictly read-only by the Daemon and is never written to disk or transmitted."
+        )
+        desc.setFont(QFont(".AppleSystemUIFont", 14, QFont.Weight.Bold))
+        desc.setStyleSheet("color: #4B5563;")
         desc.setWordWrap(True)
         form_layout.addWidget(desc)
-        
-        form_layout.addSpacing(20)
 
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_input.setPlaceholderText("ENTER YOUR MAC LOGIN PASSWORD...")
-        self.password_input.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Black))
-        self.password_input.setMinimumHeight(60)
+        self.password_input.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Black))
+        self.password_input.setMinimumHeight(54)
         self.password_input.setStyleSheet("""
             QLineEdit {
-                padding: 18px; background: #FFFFFF; 
+                padding: 14px; background: #FFFFFF;
                 border: 4px solid #000000; color: #000000;
             }
             QLineEdit:focus { background: #00E5FF; border: 4px solid #000000; }
         """)
         form_layout.addWidget(self.password_input)
-        
+
         btn_keychain = StyledButton("ENCRYPT TO APPLE KEYCHAIN", primary=True)
-        btn_keychain.setMinimumHeight(60)
+        btn_keychain.setMinimumHeight(54)
         btn_keychain.clicked.connect(self.controller.update_keychain_password)
         form_layout.addWidget(btn_keychain)
 
+        # ── Divider ───────────────────────────────────────────────────────────
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setStyleSheet("background: #000000; max-height: 3px; margin-top: 10px; margin-bottom: 10px;")
+        form_layout.addWidget(divider)
+
+        # ── Danger Zone ───────────────────────────────────────────────────────
+        danger_label = QLabel("⚠  DANGER ZONE")
+        danger_label.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Black))
+        danger_label.setStyleSheet("""
+            color: #FFFFFF;
+            background: #FF5555;
+            border: 3px solid #000000;
+            padding: 8px 16px;
+            letter-spacing: 2px;
+        """)
+        form_layout.addWidget(danger_label)
+
+        danger_desc = QLabel(
+            "These actions are IRREVERSIBLE. Reset All Data erases all biometric profiles, logs, and the saved "
+            "password, then returns VisionSight to the initial setup state. "
+            "Uninstall additionally removes the global CLI command and quits the application."
+        )
+        danger_desc.setFont(QFont(".AppleSystemUIFont", 13, QFont.Weight.Bold))
+        danger_desc.setStyleSheet("color: #7F1D1D;")
+        danger_desc.setWordWrap(True)
+        form_layout.addWidget(danger_desc)
+
+        danger_btns = QHBoxLayout()
+        danger_btns.setSpacing(16)
+
+        btn_reset = StyledButton("RESET ALL DATA", is_danger=True)
+        btn_reset.setMinimumHeight(52)
+        btn_reset.setToolTip("Erase all profiles, logs, env settings and keychain password — keeps CLI installed")
+        btn_reset.clicked.connect(self.controller.reset_all_data)
+        danger_btns.addWidget(btn_reset)
+
+        btn_uninstall = StyledButton("UNINSTALL VISIONSIGHT", is_danger=True)
+        btn_uninstall.setMinimumHeight(52)
+        btn_uninstall.setToolTip("Reset all data AND remove the global CLI symlink + shell alias, then quit")
+        btn_uninstall.setStyleSheet("""
+            QPushButton {
+                background: #000000;
+                color: #FF5555;
+                border: 3px solid #FF5555;
+                font-size: 13px;
+                font-weight: 900;
+                padding: 10px 18px;
+                letter-spacing: 1px;
+            }
+            QPushButton:hover { background: #FF5555; color: #000000; border: 3px solid #000000; }
+            QPushButton:pressed { background: #CC0000; color: #FFFFFF; }
+        """)
+        btn_uninstall.clicked.connect(self.controller.uninstall_app)
+        danger_btns.addWidget(btn_uninstall)
+
+        form_layout.addLayout(danger_btns)
         form_layout.addStretch()
-        layout.addWidget(card)
+
+        scroll.setWidget(inner)
+        card_outer_layout.addWidget(scroll)
+        layout.addWidget(card, 1)
 
 
 class LogsPage(QWidget):
@@ -405,7 +496,7 @@ class LogsPage(QWidget):
     def init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(30)
+        layout.setSpacing(20)
         
         header_layout = QHBoxLayout()
         header = QLabel("SYSTEM AUDIT")
@@ -478,7 +569,7 @@ class LogsPage(QWidget):
             }
         """)
         card_layout.addWidget(self.log_table)
-        layout.addWidget(card)
+        layout.addWidget(card, 1)
 
 
 class OnboardingPage(QWidget):
