@@ -16,6 +16,124 @@ if os.path.exists(VENV_PYTHON) and sys.executable != VENV_PYTHON:
 # Add project root to sys.path so modules can be imported
 sys.path.append(BASE_DIR)
 
+# PyQt6 imports for CLICaptureDialog
+from PyQt6.QtWidgets import QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtGui import QImage, QPixmap, QFont
+
+class CLICaptureDialog(QDialog):
+    def __init__(self, name, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"VisionSight - Biometric Registration ({name})")
+        self.setFixedSize(640, 560)
+        self.setWindowFlags(Qt.WindowType.WindowCloseButtonHint | Qt.WindowType.CustomizeWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setStyleSheet("background-color: #FFFFFF; border: 4px solid #000000;")
+        
+        self.name = name
+        self.captured_frame = None
+        self.cap = None
+        
+        self.init_ui()
+        
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+        
+        self.title_lbl = QLabel(f"REGISTER PROFILE: {self.name.upper()}")
+        self.title_lbl.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Black))
+        self.title_lbl.setStyleSheet("color: #000000;")
+        layout.addWidget(self.title_lbl)
+        
+        # Camera Feed Box
+        self.feed_lbl = QLabel("CONNECTING TO CAMERA...")
+        self.feed_lbl.setFixedSize(600, 400)
+        self.feed_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.feed_lbl.setStyleSheet("background-color: #000000; border: 4px solid #000000; color: #FFFFFF;")
+        layout.addWidget(self.feed_lbl)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(20)
+        
+        self.btn_capture = QPushButton("CAPTURE FACE")
+        self.btn_capture.setFont(QFont(".AppleSystemUIFont", 14, QFont.Weight.Black))
+        self.btn_capture.setStyleSheet("""
+            QPushButton {
+                background-color: #FFD500;
+                color: #000000;
+                border: 3px solid #000000;
+                padding: 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #000000; color: #FFD500; }
+        """)
+        self.btn_capture.clicked.connect(self.capture_frame)
+        btn_layout.addWidget(self.btn_capture)
+        
+        self.btn_cancel = QPushButton("CANCEL")
+        self.btn_cancel.setFont(QFont(".AppleSystemUIFont", 14, QFont.Weight.Black))
+        self.btn_cancel.setStyleSheet("""
+            QPushButton {
+                background-color: #FF5555;
+                color: #FFFFFF;
+                border: 3px solid #000000;
+                padding: 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #000000; color: #FF5555; }
+        """)
+        self.btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(self.btn_cancel)
+        
+        layout.addLayout(btn_layout)
+        
+        import cv2
+        self.cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_frame)
+        self.timer.start(30)
+        
+    def update_frame(self):
+        if not self.cap or not self.cap.isOpened():
+            self.feed_lbl.setText("CAMERA OFFLINE")
+            return
+            
+        ret, frame = self.cap.read()
+        if ret:
+            self.current_frame = frame
+            import cv2
+            mirror = cv2.flip(frame, 1)
+            rgb_image = cv2.cvtColor(mirror, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb_image.shape
+            bytes_per_line = ch * w
+            qt_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            pix = QPixmap.fromImage(qt_img).scaled(600, 400, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+            self.feed_lbl.setPixmap(pix)
+            
+    def capture_frame(self):
+        if hasattr(self, 'current_frame'):
+            self.captured_frame = self.current_frame.copy()
+            self.accept()
+            
+    def closeEvent(self, event):
+        if self.cap and self.cap.isOpened():
+            self.cap.release()
+        super().closeEvent(event)
+        
+    def reject(self):
+        if self.cap and self.cap.isOpened():
+            self.cap.release()
+        super().reject()
+        
+    def accept(self):
+        if self.cap and self.cap.isOpened():
+            self.cap.release()
+        super().accept()
+
 def get_running_pids():
     pids = []
     try:
@@ -102,36 +220,18 @@ def register_face_cli(name):
     os.makedirs(faces_dir, exist_ok=True)
     
     print(f"Registering face for '{name}'...")
-    print("Opening camera (press Spacebar to capture, Esc to abort)...")
-    cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
-    if not cap.isOpened():
-        print("Error: Could not open camera.")
-        return
-        
-    captured_frame = None
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Error: Failed to read frame.")
-            break
-            
-        mirror = cv2.flip(frame, 1)
-        cv2.imshow("VisionSight CLI - Register Face", mirror)
-        key = cv2.waitKey(1) & 0xFF
-        if key == 32: # Spacebar
-            captured_frame = frame
-            break
-        elif key == 27: # Esc
-            break
-            
-    cap.release()
-    cv2.destroyAllWindows()
-    cv2.waitKey(1)
     
-    if captured_frame is None:
+    # Run PyQt Capture dialog
+    app = QApplication.instance() or QApplication(sys.argv)
+    dialog = CLICaptureDialog(name)
+    result = dialog.exec()
+    
+    if result != QDialog.DialogCode.Accepted or dialog.captured_frame is None:
         print("Registration aborted by user.")
         return
         
+    captured_frame = dialog.captured_frame
+    
     rgb_frame = cv2.cvtColor(captured_frame, cv2.COLOR_BGR2RGB)
     locs = face_recognition.face_locations(rgb_frame)
     if not locs:
@@ -230,8 +330,8 @@ def view_logs():
 def test_recognition():
     from face_auth.verify import FaceVerifier
     from system.lock import SystemController
-    print("Starting one-time CLI authentication test...")
-    verifier = FaceVerifier(headless=False)
+    print("Starting one-time CLI authentication test (Headless Mode)...")
+    verifier = FaceVerifier(headless=True)
     result = verifier.authenticate_once(SystemController(), use_esc_hook=True, defer_unlock=True)
     if result == "success":
         print(f"\n✅ Test Successful: Authenticated as '{verifier.auth_name}'!")
