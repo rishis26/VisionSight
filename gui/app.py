@@ -1,270 +1,25 @@
 import sys
 import os
+import time
+import subprocess
+import pickle
+import re
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import subprocess
-import time
-import cv2
-import pickle
-import numpy as np
-import face_recognition
-import re
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QPushButton, QStackedWidget, 
                              QLineEdit, QFrame, QMessageBox, QSpacerItem, QSizePolicy,
-                             QListWidget, QSlider, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView,
-                             QGraphicsDropShadowEffect, QStyle, QSystemTrayIcon, QMenu)
-from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QThread, pyqtSignal, QSize, pyqtProperty, QEvent
-from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QPainter, QBrush, QIcon, QPen, QAction
+                             QStyle, QSystemTrayIcon, QMenu, QTableWidgetItem)
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize, QEvent
+from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QIcon, QAction, QKeySequence, QShortcut
 from dotenv import load_dotenv, set_key
 
-# Daemon core — runs as a background thread inside this same process
-from main import DaemonCore, DaemonBridge
-
-# ---------------------------------------------------------
-# NEO-BRUTALIST UI COMPONENTS
-# ---------------------------------------------------------
-
-def apply_shadow(widget, blur_radius=0, x_offset=6, y_offset=6, alpha=255, color="#000000"):
-    # Hard offset shadows with 0 blur - the signature of Neo-Brutalism!
-    shadow = QGraphicsDropShadowEffect(widget)
-    shadow.setBlurRadius(blur_radius)
-    shadow.setColor(QColor(color))
-    shadow.setOffset(x_offset, y_offset)
-    widget.setGraphicsEffect(shadow)
-
-class SolidFrame(QFrame):
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#FAF9F6")) 
-
-class ToggleButton(QWidget):
-    toggled = pyqtSignal(bool)
-
-    def __init__(self, checked=True, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(70, 38)
-        self._checked = checked
-        self._track_color = QColor("#FFD500") if checked else QColor("#FFFFFF")
-        self._thumb_pos = self.width() - 32 if checked else 6
-        
-        self.animation = QPropertyAnimation(self, b"thumb_pos")
-        self.animation.setEasingCurve(QEasingCurve.Type.InOutCubic)
-        self.animation.setDuration(150)
-
-    def isChecked(self):
-        return self._checked
-
-    def setCheckedNoSignal(self, checked):
-        if self._checked != checked:
-            self._checked = checked
-            self.start_transition()
-
-    def start_transition(self):
-        self.animation.stop()
-        if self._checked:
-            self.animation.setEndValue(self.width() - 32)
-            self._track_color = QColor("#FFD500") # Neo yellow
-        else:
-            self.animation.setEndValue(6)
-            self._track_color = QColor("#FFFFFF")
-        self.animation.start()
-
-    @pyqtProperty(float)
-    def thumb_pos(self):
-        return self._thumb_pos
-
-    @thumb_pos.setter
-    def thumb_pos(self, pos):
-        self._thumb_pos = pos
-        self.update()
-
-    def mouseReleaseEvent(self, event):
-        super().mouseReleaseEvent(event)
-        self.setCheckedNoSignal(not self._checked)
-        self.toggled.emit(self._checked)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        # Track
-        painter.setBrush(QBrush(self._track_color))
-        painter.setPen(QPen(QColor("#000000"), 3))
-        painter.drawRect(0, 0, self.width(), self.height())
-        
-        # Thumb
-        painter.setBrush(QBrush(QColor("#000000")))
-        painter.drawRect(int(self._thumb_pos), 5, 26, 28)
-
-class CameraThread(QThread):
-    new_frame = pyqtSignal(QImage, object)
-
-    def __init__(self, camera_index=0):
-        super().__init__()
-        self.camera_index = camera_index
-        self._run_flag = True
-        self.cap = None
-
-    def run(self):
-        self.cap = cv2.VideoCapture(self.camera_index)
-        if not self.cap.isOpened():
-            return
-            
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
-        while self._run_flag:
-            ret, frame = self.cap.read()
-            if ret:
-                frame = cv2.flip(frame, 1)
-                rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                h, w, ch = rgb_image.shape
-                bytes_per_line = ch * w
-                qt_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
-                self.new_frame.emit(qt_img, frame)
-            self.msleep(30)
-            
-        self.cap.release()
-
-    def stop(self):
-        self._run_flag = False
-        self.wait()
-
-
-class DaemonScanThread(QThread):
-    """
-    Runs the blocking face-recognition camera scan as a Qt-managed thread.
-
-    WHY QThread and not threading.Thread:
-      cv2.VideoCapture() on Apple Silicon (macOS Sonoma) raises EXC_BAD_INSTRUCTION
-      when called from a raw Python threading.Thread. QThreads are registered with
-      the macOS CoreMedia / AVFoundation subsystem and are safe for camera access.
-
-    The daemon background thread (threading.Thread) ONLY emits Qt signals.
-    This QThread does all the actual camera + face-recognition work.
-    """
-
-    scan_complete = pyqtSignal(str, str)  # (result, authenticated_username)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        from system.lock import SystemController
-        from face_auth.verify import FaceVerifier
-        self.system = SystemController()
-        self.verifier = FaceVerifier(headless=True)
-
-    def run(self):
-        """Blocking scan. Runs on this QThread's execution context.
-
-        defer_unlock=True: simulate_unlock() uses CGEventPost(kCGHIDEventTap)
-        which SILENTLY FAILS when called from a background QThread on macOS.
-        We defer the unlock to the main thread via the scan_complete signal.
-
-        use_esc_hook=False: skips pynput's CGEventTap which requires a CFRunLoop
-        on the calling thread (QThread has none). Abort is handled externally via
-        _stop_requested set by the daemon's Qt abort signal.
-        """
-        try:
-            self.verifier.reload_config()
-            result = self.verifier.authenticate_once(
-                self.system, use_esc_hook=False, defer_unlock=True
-            )
-        except Exception as e:
-            print(f"⚠️ DaemonScanThread exception: {e}")
-            result = "failed"
-
-        # Pass username to main thread ONLY if unlock should happen
-        auth_name = ""
-        if result == "success" and self.verifier.AUTO_UNLOCK:
-            auth_name = self.verifier.auth_name or ""
-        self.scan_complete.emit(result, auth_name)
-
-    def abort(self):
-        """Thread-safe abort: sets a flag the verifier checks each frame."""
-        self.verifier._stop_requested = True
-
-class StyledButton(QPushButton):
-    def __init__(self, text, primary=True, is_danger=False):
-        super().__init__(text)
-        self.primary = primary
-        self.is_danger = is_danger
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.update_style()
-        apply_shadow(self, 0, 4, 4, 255, "#000000")
-
-    def update_style(self):
-        if self.is_danger:
-            bg = "#FF5555" # Hard red
-            text_color = "#000000"
-        elif self.primary:
-            bg = "#FFD500" # Hard yellow
-            text_color = "#000000"
-        else:
-            bg = "#FFFFFF" # Hard white
-            text_color = "#000000"
-            
-        self.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {bg};
-                color: {text_color};
-                border: 3px solid #000000;
-                border-radius: 0px;
-                padding: 14px 24px;
-                font-size: 16px;
-                font-weight: 900;
-                text-transform: uppercase;
-            }}
-            QPushButton:hover {{
-                background-color: #00E5FF;
-            }}
-            QPushButton:pressed {{
-                background-color: #000000;
-                color: #FFFFFF;
-            }}
-        """)
-
-class NavButton(QPushButton):
-    def __init__(self, text, idx, callback, icon_enum=None):
-        super().__init__(text)
-        self.idx = idx
-        self.callback = callback
-        if icon_enum:
-            self.setIcon(QApplication.style().standardIcon(icon_enum))
-            self.setIconSize(QSize(20, 20))
-            
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.default_style = """
-            QPushButton {
-                text-align: left; padding: 14px 20px;
-                background: transparent; color: #000000; font-size: 16px; font-weight: 900;
-                border: 3px solid transparent; margin-bottom: 12px;
-            }
-            QPushButton:hover { border: 3px solid #000000; background: #FFD500; }
-        """
-        self.active_style = """
-            QPushButton {
-                text-align: left; padding: 14px 20px;
-                background: #00E5FF; color: #000000; font-size: 16px; font-weight: 900;
-                border: 3px solid #000000; margin-bottom: 12px;
-            }
-        """
-        self.setStyleSheet(self.default_style)
-        self.clicked.connect(self.on_click)
-        
-    def on_click(self):
-        self.callback(self.idx)
-        
-    def set_active(self, is_active):
-        self.setStyleSheet(self.active_style if is_active else self.default_style)
-        if is_active:
-            apply_shadow(self, 0, 4, 4, 255, "#000000")
-        else:
-            self.setGraphicsEffect(None)
-
+from main import DaemonCore
+from gui.widgets import apply_shadow, SolidFrame, ToggleButton, StyledButton, NavButton
+from gui.threads import CameraThread, DaemonScanThread
+from gui.pages import (DashboardPage, IdentitiesPage, SettingsPage, 
+                       SecurityPage, LogsPage, OnboardingPage)
 
 class VisionSightGUI(QMainWindow):
     def __init__(self):
@@ -291,22 +46,42 @@ class VisionSightGUI(QMainWindow):
         self.current_cv_frame = None
         self.identity_preview_mode = False
 
-        # Daemon core — created once, signal-wired on start
         self._daemon_core: DaemonCore | None = None
-
-        # Active scan worker (QThread) — safe for cv2 on Apple Silicon
         self._scan_thread: DaemonScanThread | None = None
         self._last_scan_end: float = 0.0
 
+        # Keyboard Shortcuts for standard macOS behaviors (Cmd+M to minimize, Cmd+Ctrl+F to fullscreen)
+        self.shortcut_minimize = QShortcut(QKeySequence("Ctrl+M"), self)
+        self.shortcut_minimize.activated.connect(self.showMinimized)
+
+        self.shortcut_fullscreen = QShortcut(QKeySequence("Ctrl+Meta+F"), self)
+        self.shortcut_fullscreen.activated.connect(self.toggle_fullscreen)
+
         self.init_ui()
+        self.init_tray()
         
         if self.is_onboarding_needed():
             self.sidebar.hide()
             self.content_stack.setCurrentIndex(5)
-            self.start_camera()
+            cam_ok = self.check_camera_permission()
+            acc_ok = self.check_accessibility_permission()
+            if not (cam_ok and acc_ok):
+                self.wizard_stack.setCurrentIndex(0)
+                self.refresh_permissions_status()
+            else:
+                pw_exists = False
+                try:
+                    subprocess.check_output(['security', 'find-generic-password', '-s', 'VisionSightDaemon', '-w'], stderr=subprocess.DEVNULL)
+                    pw_exists = True
+                except:
+                    pass
+                if not pw_exists:
+                    self.wizard_stack.setCurrentIndex(1)
+                else:
+                    self.wizard_stack.setCurrentIndex(2)
+                    self.start_camera()
         else:
             QTimer.singleShot(100, lambda: self.switch_to_page(0))
-            # Auto-start daemon on launch
             QTimer.singleShot(800, self.start_daemon_thread)
 
     def init_ui(self):
@@ -319,12 +94,43 @@ class VisionSightGUI(QMainWindow):
         self.content_stack = QStackedWidget()
         self.content_stack.setStyleSheet("background-color: transparent;")
 
-        self.page_dashboard = self.create_dashboard_page()
-        self.page_users = self.create_users_page()
-        self.page_settings = self.create_settings_page()
-        self.page_security = self.create_security_page()
-        self.page_logs = self.create_logs_page()
-        self.page_onboarding = self.create_onboarding_page()
+        # Instantiate modular pages
+        self.page_dashboard = DashboardPage(self)
+        self.page_users = IdentitiesPage(self)
+        self.page_settings = SettingsPage(self)
+        self.page_security = SecurityPage(self)
+        self.page_logs = LogsPage(self)
+        self.page_onboarding = OnboardingPage(self)
+
+        # Shortcut references to page widgets for direct controller access
+        self.wizard_stack = self.page_onboarding.wizard_stack
+        self.wiz_pass = self.page_onboarding.wiz_pass
+        self.wiz_video = self.page_onboarding.wiz_video
+        self.wiz_name = self.page_onboarding.wiz_name
+        self.lbl_cam_status = self.page_onboarding.lbl_cam_status
+        self.btn_grant_cam = self.page_onboarding.btn_grant_cam
+        self.lbl_acc_status = self.page_onboarding.lbl_acc_status
+        self.btn_grant_acc = self.page_onboarding.btn_grant_acc
+        
+        self.status_val = self.page_dashboard.status_val
+        self.daemon_toggle = self.page_dashboard.daemon_toggle
+        self.auth_result = self.page_dashboard.auth_result
+        self.auth_time = self.page_dashboard.auth_time
+        self.dash_video = self.page_dashboard.dash_video
+        
+        self.video_label = self.page_users.video_label
+        self.name_input = self.page_users.name_input
+        self.identity_list = self.page_users.identity_list
+        
+        self.slider_widgets = self.page_settings.slider_widgets
+        self.combo_fps = self.page_settings.combo_fps
+        self.combo_res = self.page_settings.combo_res
+        self.auto_unlock_toggle = self.page_settings.auto_unlock_toggle
+        
+        self.password_input = self.page_security.password_input
+        
+        self.log_filter = self.page_logs.log_filter
+        self.log_table = self.page_logs.log_table
 
         self.content_stack.addWidget(self.page_dashboard)
         self.content_stack.addWidget(self.page_users)
@@ -352,7 +158,108 @@ class VisionSightGUI(QMainWindow):
         if self.content_stack.currentIndex() == 0:
             self.refresh_dashboard_status()
 
+    def check_accessibility_permission(self) -> bool:
+        try:
+            import ctypes
+            app_services = ctypes.CDLL('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices')
+            return bool(app_services.AXIsProcessTrusted())
+        except Exception as e:
+            print(f"⚠️ Error checking accessibility permission: {e}")
+            return False
+
+    def check_camera_permission(self) -> bool:
+        try:
+            import AVFoundation
+            auth_status = AVFoundation.AVCaptureDevice.authorizationStatusForMediaType_(
+                AVFoundation.AVMediaTypeVideo
+            )
+            return auth_status == 3
+        except Exception as e:
+            print(f"⚠️ Error checking camera permission: {e}")
+            try:
+                import cv2
+                cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
+                if cap.isOpened():
+                    ret, _ = cap.read()
+                    cap.release()
+                    return ret
+            except Exception:
+                pass
+            return False
+
+    def request_camera_access(self):
+        try:
+            import AVFoundation
+            auth_status = AVFoundation.AVCaptureDevice.authorizationStatusForMediaType_(
+                AVFoundation.AVMediaTypeVideo
+            )
+            if auth_status == 0:
+                AVFoundation.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+                    AVFoundation.AVMediaTypeVideo,
+                    lambda granted: QTimer.singleShot(100, self.refresh_permissions_status)
+                )
+            else:
+                subprocess.run(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera"])
+        except Exception as e:
+            print(f"Camera request failed: {e}")
+            try:
+                import cv2
+                cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
+                if cap.isOpened():
+                    cap.release()
+            except Exception:
+                pass
+        QTimer.singleShot(1000, self.refresh_permissions_status)
+
+    def open_accessibility_settings(self):
+        subprocess.run(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
+        QTimer.singleShot(1000, self.refresh_permissions_status)
+
+    def refresh_permissions_status(self):
+        cam_ok = self.check_camera_permission()
+        acc_ok = self.check_accessibility_permission()
+        
+        if cam_ok:
+            self.lbl_cam_status.setText("📷 CAMERA: GRANTED")
+            self.lbl_cam_status.setStyleSheet("color: #000000; background: #00FF00; padding: 5px; font-weight: 900;")
+            self.btn_grant_cam.setEnabled(False)
+            self.btn_grant_cam.setText("AUTHORIZED")
+        else:
+            self.lbl_cam_status.setText("📷 CAMERA: DENIED")
+            self.lbl_cam_status.setStyleSheet("color: #FFFFFF; background: #FF5555; padding: 5px; font-weight: 900;")
+            self.btn_grant_cam.setEnabled(True)
+            self.btn_grant_cam.setText("GRANT CAMERA")
+            
+        if acc_ok:
+            self.lbl_acc_status.setText("♿ ACCESSIBILITY: GRANTED")
+            self.lbl_acc_status.setStyleSheet("color: #000000; background: #00FF00; padding: 5px; font-weight: 900;")
+            self.btn_grant_acc.setEnabled(False)
+            self.btn_grant_acc.setText("AUTHORIZED")
+        else:
+            self.lbl_acc_status.setText("♿ ACCESSIBILITY: DENIED")
+            self.lbl_acc_status.setStyleSheet("color: #FFFFFF; background: #FF5555; padding: 5px; font-weight: 900;")
+            self.btn_grant_acc.setEnabled(True)
+            self.btn_grant_acc.setText("GRANT ACCESS")
+
+        return cam_ok, acc_ok
+
+    def verify_permissions_and_continue(self):
+        cam_ok, acc_ok = self.refresh_permissions_status()
+        if cam_ok and acc_ok:
+            self.wizard_stack.setCurrentIndex(1)
+        else:
+            missing = []
+            if not cam_ok: missing.append("Camera")
+            if not acc_ok: missing.append("Accessibility")
+            QMessageBox.warning(
+                self, "PERMISSIONS REQUIRED",
+                "Please enable the following permissions to continue:\n" + "\n".join(f"- {m}" for m in missing)
+            )
+
     def is_onboarding_needed(self):
+        if not self.check_camera_permission() or not self.check_accessibility_permission():
+            return True
+
         pw_exists = False
         try:
             subprocess.check_output(['security', 'find-generic-password', '-s', 'VisionSightDaemon', '-w'], stderr=subprocess.DEVNULL)
@@ -362,95 +269,15 @@ class VisionSightGUI(QMainWindow):
             
         faces_exist = False
         if os.path.exists(self.encodings_path):
-            with open(self.encodings_path, 'rb') as f:
-                data = pickle.load(f)
-                if len(data) > 0:
-                    faces_exist = True
+            try:
+                with open(self.encodings_path, 'rb') as f:
+                    data = pickle.load(f)
+                    if len(data) > 0:
+                        faces_exist = True
+            except Exception as e:
+                print(f"⚠️ Error loading encodings pickle: {e}")
                     
         return not (pw_exists and faces_exist)
-
-    def create_onboarding_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.wizard_stack = QStackedWidget()
-        
-        # S1: PASSWORD
-        w1 = self.card_frame("#FFFFFF")
-        w1_l = QVBoxLayout(w1)
-        w1_l.setContentsMargins(50, 50, 50, 50)
-        w1_l.setSpacing(30)
-        
-        t1 = QLabel("WELCOME TO VISIONSIGHT")
-        t1.setFont(QFont(".AppleSystemUIFont", 48, QFont.Weight.Black))
-        t1.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        w1_l.addWidget(t1)
-        
-        d1 = QLabel("Before you can use the frictionless biometric bypass, you need to securely inject your Mac password.\n\n🔒 PRIVACY GUARANTEE: Your password is encrypted natively into the Apple Mac hardware keychain enclave.\nIt never touches the cloud and is strictly physically localized to your machine.")
-        d1.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Bold))
-        d1.setStyleSheet("color: #4B5563; line-height: 1.5;")
-        d1.setWordWrap(True)
-        d1.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        w1_l.addWidget(d1)
-        
-        self.wiz_pass = QLineEdit()
-        self.wiz_pass.setEchoMode(QLineEdit.EchoMode.Password)
-        self.wiz_pass.setPlaceholderText("ENTER MAC LOGIN PASSWORD TO CONTINUE...")
-        self.wiz_pass.setFont(QFont(".AppleSystemUIFont", 20, QFont.Weight.Black))
-        self.wiz_pass.setMinimumHeight(70)
-        self.wiz_pass.setStyleSheet("QLineEdit { padding: 20px; background: #FFFFFF; border: 4px solid #000000; color: #000000; } QLineEdit:focus { background: #00E5FF; color: #000000; }")
-        w1_l.addWidget(self.wiz_pass)
-        
-        btn_next1 = StyledButton("ENCRYPT TO KEYCHAIN && CONTINUE", primary=True)
-        btn_next1.setMinimumHeight(70)
-        btn_next1.clicked.connect(self.wizard_save_password)
-        w1_l.addWidget(btn_next1)
-        w1_l.addStretch()
-        
-        # S2: FACE
-        w2 = self.card_frame("#FFFFFF")
-        w2_l = QVBoxLayout(w2)
-        w2_l.setContentsMargins(50, 50, 50, 50)
-        w2_l.setSpacing(20)
-        
-        t2 = QLabel("BIOMETRIC REGISTRATION")
-        t2.setFont(QFont(".AppleSystemUIFont", 40, QFont.Weight.Black))
-        t2.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        w2_l.addWidget(t2)
-        
-        d2 = QLabel("Look directly at the camera. Ensure your face is clearly visible.")
-        d2.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Bold))
-        d2.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        w2_l.addWidget(d2)
-        
-        self.wiz_video = QLabel()
-        self.wiz_video.setFixedSize(360, 270)
-        self.wiz_video.setStyleSheet("background-color: #000000; border: 4px solid #000000;")
-        self.wiz_video.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        vid_row = QHBoxLayout()
-        vid_row.addStretch()
-        vid_row.addWidget(self.wiz_video)
-        vid_row.addStretch()
-        w2_l.addLayout(vid_row)
-        
-        self.wiz_name = QLineEdit()
-        self.wiz_name.setPlaceholderText("ENTER YOUR NAME (e.g. USERNAME)")
-        self.wiz_name.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Black))
-        self.wiz_name.setStyleSheet("QLineEdit { padding: 16px; border: 4px solid #000000; background: #FFFFFF; color: #000000; } QLineEdit:focus { background: #00E5FF; color: #000000; }")
-        w2_l.addWidget(self.wiz_name)
-        
-        btn_next2 = StyledButton("CAPTURE IDENTITY AND FINISH", primary=True)
-        btn_next2.setMinimumHeight(60)
-        btn_next2.clicked.connect(self.wizard_save_face)
-        w2_l.addWidget(btn_next2)
-        
-        self.wizard_stack.addWidget(w1)
-        self.wizard_stack.addWidget(w2)
-        layout.addWidget(self.wizard_stack)
-        
-        return page
 
     def wizard_save_password(self):
         pw = self.wiz_pass.text()
@@ -460,7 +287,8 @@ class VisionSightGUI(QMainWindow):
         try:
             subprocess.run(['security', 'delete-generic-password', '-a', os.getlogin(), '-s', 'VisionSightDaemon'], capture_output=True)
             subprocess.run(['security', 'add-generic-password', '-a', os.getlogin(), '-s', 'VisionSightDaemon', '-w', pw], check=True)
-            self.wizard_stack.setCurrentIndex(1)
+            self.wizard_stack.setCurrentIndex(2)
+            self.start_camera()
         except Exception as e:
             QMessageBox.warning(self, "ERROR", f"FAILED TO UPDATE KEYCHAIN: {e}")
 
@@ -471,6 +299,9 @@ class VisionSightGUI(QMainWindow):
             QMessageBox.warning(self, "ERROR", "NAME REQUIRED.")
             return
             
+        import cv2
+        import face_recognition
+
         frame = self.current_cv_frame.copy()
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         locs = face_recognition.face_locations(rgb_frame)
@@ -542,7 +373,6 @@ class VisionSightGUI(QMainWindow):
         
         layout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
 
-        # QUIT button — actually terminates the process and daemon
         btn_quit = QPushButton("⏻  QUIT VISIONSIGHT")
         btn_quit.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_quit.setFont(QFont(".AppleSystemUIFont", 13, QFont.Weight.Black))
@@ -571,16 +401,9 @@ class VisionSightGUI(QMainWindow):
         apply_shadow(footer, 0, 4, 4, 255, "#000000")
         layout.addWidget(footer)
 
-        # Credit label with clickable GitHub link
         credit = QLabel('A PROJECT BY<br><a href="https://github.com/rishis26" style="color:#000000; font-weight:900;">RISHI SHAH ↗</a>')
         credit.setFont(QFont(".AppleSystemUIFont", 11, QFont.Weight.Bold))
-        credit.setStyleSheet("""
-            QLabel {
-                color: #000000;
-                padding: 8px 4px 0px 4px;
-                text-align: center;
-            }
-        """)
+        credit.setStyleSheet("QLabel { color: #000000; padding: 8px 4px 0px 4px; text-align: center; }")
         credit.setAlignment(Qt.AlignmentFlag.AlignCenter)
         credit.setOpenExternalLinks(True)
         credit.setTextFormat(Qt.TextFormat.RichText)
@@ -620,181 +443,60 @@ class VisionSightGUI(QMainWindow):
         else:
             self.stop_camera()
 
-    # ----------------------------------------------------
-    # PAGE 1: DASHBOARD
-    # ----------------------------------------------------
-    def create_dashboard_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(30)
-
-        header = QLabel("SYSTEM OVERVIEW")
-        header.setFont(QFont(".AppleSystemUIFont", 40, QFont.Weight.Black))
-        header.setStyleSheet("color: #000000;")
-        layout.addWidget(header)
-
-        cards_layout = QHBoxLayout()
-        cards_layout.setSpacing(30)
-        
-        # Card 1: System Status
-        self.status_card = self.card_frame("#FFFFFF")
-        sc_layout = QVBoxLayout(self.status_card)
-        sc_layout.setContentsMargins(30, 30, 30, 30)
-        
-        sc_title = QLabel("DAEMON STATE")
-        sc_title.setFont(QFont(".AppleSystemUIFont", 14, QFont.Weight.Black))
-        sc_title.setStyleSheet("color: #000000;")
-        
-        self.status_val = QLabel("CHECKING...")
-        self.status_val.setFont(QFont(".AppleSystemUIFont", 36, QFont.Weight.Black))
-        self.status_val.setStyleSheet("color: #000000;")
-        
-        sc_layout.addWidget(sc_title)
-        sc_layout.addSpacing(5)
-        sc_layout.addWidget(self.status_val)
-        sc_layout.addStretch()
-        
-        self.daemon_toggle = ToggleButton(checked=False)
-        self.daemon_toggle.toggled.connect(self.toggle_daemon)
-        sc_layout.addWidget(self.daemon_toggle)
-        
-        # Card 2: Last Auth
-        self.auth_card = self.card_frame("#FFFFFF")
-        ac_layout = QVBoxLayout(self.auth_card)
-        ac_layout.setContentsMargins(30, 30, 30, 30)
-        
-        ac_title = QLabel("LAST EVENT")
-        ac_title.setFont(QFont(".AppleSystemUIFont", 14, QFont.Weight.Black))
-        ac_title.setStyleSheet("color: #000000;")
-        
-        self.auth_result = QLabel("SUCCESS")
-        self.auth_result.setFont(QFont(".AppleSystemUIFont", 36, QFont.Weight.Black))
-        self.auth_result.setStyleSheet("color: #000000; background: #FFD500; padding: 0px 5px;")
-        
-        self.auth_time = QLabel("09:41 AM")
-        self.auth_time.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Bold))
-        self.auth_time.setStyleSheet("color: #000000; margin-top: 10px;")
-        
-        ac_layout.addWidget(ac_title)
-        ac_layout.addSpacing(5)
-        ac_layout.addWidget(self.auth_result)
-        ac_layout.addWidget(self.auth_time)
-        ac_layout.addStretch()
-
-        cards_layout.addWidget(self.status_card)
-        cards_layout.addWidget(self.auth_card)
-        layout.addLayout(cards_layout)
-
-        # Video Preview
-        self.preview_card = self.card_frame("#000000")
-        pc_layout = QVBoxLayout(self.preview_card)
-        pc_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.dash_video = QLabel()
-        self.dash_video.setMinimumHeight(300)
-        self.dash_video.setStyleSheet("background-color: #000000;")
-        self.dash_video.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        pc_layout.addWidget(self.dash_video)
-        
-        layout.addWidget(self.preview_card, 1)
-
-        return page
-
     def is_daemon_running(self) -> bool:
-        """Check if the in-process daemon thread is alive."""
         return self._daemon_core is not None and self._daemon_core.is_alive()
 
     def start_daemon_thread(self):
-        """Start the daemon listener thread and wire its bridge signals."""
         if self.is_daemon_running():
-            print("⚠️ Daemon already running — ignoring start request.")
             return
         self._daemon_core = DaemonCore()
-        # Connect bridge Qt signals (AutoConnection = queued cross-thread delivery)
         self._daemon_core.bridge.scan_requested.connect(self._on_daemon_scan_requested)
         self._daemon_core.bridge.abort_requested.connect(self._on_daemon_abort_requested)
         self._daemon_core.start()
 
     def stop_daemon_thread(self):
-        """Abort any active scan, then shut down the listener thread."""
-        self._on_daemon_abort_requested()  # no-op if no scan running
+        self._on_daemon_abort_requested()
         if self._daemon_core:
             self._daemon_core.stop()
             self._daemon_core = None
 
     def toggle_daemon(self, state):
-        """Called by the dashboard toggle button."""
         if state:
             self.start_daemon_thread()
         else:
             self.stop_daemon_thread()
         QTimer.singleShot(600, self.refresh_dashboard_status)
 
-    # ── Daemon scan slots (always called on main thread via Qt queued delivery) ──
-
     def _on_daemon_scan_requested(self):
-        """
-        Called on the MAIN THREAD when the daemon detects wake-while-locked.
-        Starts a DaemonScanThread (QThread) — safe for cv2 on Apple Silicon.
-        """
         if self._scan_thread and self._scan_thread.isRunning():
-            print("⚠️ Scan already in progress — ignoring duplicate request.")
             return
 
-        # Read cooldown from live .env (daemon may have reloaded config)
         import system.paths as paths
         from dotenv import load_dotenv
         load_dotenv(paths.get_env_path(), override=True)
         cooldown = int(os.getenv("VISIONSIGHT_COOLDOWN", "10"))
         elapsed = time.time() - self._last_scan_end
         if elapsed < cooldown:
-            print(f"⏳ Cooldown active — {int(cooldown - elapsed)}s remaining.")
             return
 
-        print("🟢 [MAIN THREAD] Starting DaemonScanThread (cv2-safe QThread)...")
-        # Yield the GUI camera so the scan thread can open the device
         self.stop_camera()
-
         self._scan_thread = DaemonScanThread(parent=self)
         self._scan_thread.scan_complete.connect(self._on_daemon_scan_complete)
         self._scan_thread.start()
 
     def _on_daemon_abort_requested(self):
-        """Called on the main thread — abort any in-flight scan."""
         if self._scan_thread and self._scan_thread.isRunning():
-            print("🛑 [MAIN THREAD] Aborting daemon scan...")
             self._scan_thread.abort()
 
     def _on_daemon_scan_complete(self, result: str, user_name: str):
-        """
-        Called on the MAIN THREAD when a scan finishes (any outcome).
-
-        CRITICAL: simulate_unlock() MUST run here (main thread) because
-        CGEventPost(kCGHIDEventTap) silently fails from background QThreads
-        on macOS. The NSApplication run loop thread is the only context where
-        HID-level event posting is honoured by the WindowServer.
-        """
         self._last_scan_end = time.time()
         self._scan_thread = None
-        print(f"[SCAN RESULT] {result} (user: {user_name or 'n/a'})")
 
-        if result == "success":
-            if user_name:
-                # Execute unlock on MAIN THREAD — this is the whole point
-                print(f"✅ Biometric unlock successful — executing simulate_unlock on main thread...")
-                from system.lock import SystemController
-                main_thread_controller = SystemController()
-                main_thread_controller.simulate_unlock(user_name)
-            else:
-                print("✅ Face verified but AUTO UNLOCK is disabled.")
-        elif result in ("rejected", "aborted"):
-            print("🛑 Scan cancelled — user may type password manually.")
-        elif result == "failed":
-            print("⚠️ Scan failed (camera error).")
+        if result == "success" and user_name:
+            from system.lock import SystemController
+            main_thread_controller = SystemController()
+            main_thread_controller.simulate_unlock(user_name)
 
-        # Only reacquire GUI camera if the window is visible and on a camera page
-        # (window may be hidden after Cmd+Q — don’t open camera while invisible)
         if self.isVisible() and self.content_stack.currentIndex() in [0, 1]:
             self.start_camera()
 
@@ -830,15 +532,12 @@ class VisionSightGUI(QMainWindow):
             self.status_val.setText(state)
             self.status_val.setStyleSheet(style)
 
-            # Camera coordination: yield to daemon when it needs the camera
             if state in ["ACTIVE", "LOCKED"]:
                 self.stop_camera()
             elif state in ["IDLE", "COOLDOWN"]:
-                # Only restart camera if window is visible
                 if self.isVisible() and self.content_stack.currentIndex() in [0, 1]:
                     self.start_camera()
         
-        # Update tray icon status
         self.update_tray_daemon_status()
 
         if os.path.exists(self.log_path):
@@ -869,108 +568,6 @@ class VisionSightGUI(QMainWindow):
             import datetime
             dt = datetime.datetime.fromtimestamp(mod_time)
             self.auth_time.setText("TRIGGERED: " + dt.strftime("%B %d, %I:%M %p").upper())
-
-    # ----------------------------------------------------
-    # PAGE 2: USERS
-    # ----------------------------------------------------
-    def create_users_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(30)
-        
-        header = QLabel("IDENTITIES")
-        header.setFont(QFont(".AppleSystemUIFont", 40, QFont.Weight.Black))
-        header.setStyleSheet("color: #000000;")
-        layout.addWidget(header)
-
-        split_layout = QHBoxLayout()
-        split_layout.setSpacing(30)
-
-        left_pane = self.card_frame("#FFFFFF")
-        left_layout = QVBoxLayout(left_pane)
-        left_layout.setContentsMargins(30, 30, 30, 30)
-        left_layout.setSpacing(20)
-        
-        vid_frame = QFrame()
-        vid_frame.setFixedSize(360, 270)
-        vid_frame.setStyleSheet("background-color: #000000; border: 4px solid #000000;")
-        v_l = QVBoxLayout(vid_frame)
-        v_l.setContentsMargins(0,0,0,0)
-        self.video_label = QLabel()
-        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        v_l.addWidget(self.video_label)
-        apply_shadow(vid_frame, 0, 6, 6, 255, "#000000")
-        
-        left_layout.addWidget(vid_frame, alignment=Qt.AlignmentFlag.AlignCenter)
-        
-        self.name_input = QLineEdit()
-        self.name_input.setPlaceholderText("IDENTITY NAME")
-        self.name_input.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Bold))
-        self.name_input.setStyleSheet("""
-            QLineEdit {
-                padding: 16px; background: #FFFFFF; 
-                border: 3px solid #000000; color: #000000; font-weight: 900;
-            }
-            QLineEdit:focus { background: #FFD500; }
-        """)
-        left_layout.addWidget(self.name_input)
-        
-        btn_add = StyledButton("REGISTER ID", primary=True)
-        btn_add.clicked.connect(lambda: self.register_face())
-        left_layout.addWidget(btn_add)
-        
-        btn_reregister = StyledButton("UPDATE ID", primary=False)
-        btn_reregister.clicked.connect(self.reregister_face)
-        left_layout.addWidget(btn_reregister)
-        left_layout.addStretch()
-
-        right_pane = self.card_frame("#FFFFFF")
-        right_layout = QVBoxLayout(right_pane)
-        right_layout.setContentsMargins(30, 30, 30, 30)
-        right_layout.setSpacing(15)
-        
-        list_title = QLabel("AUTHORIZED IDS")
-        list_title.setFont(QFont(".AppleSystemUIFont", 14, QFont.Weight.Black))
-        list_title.setStyleSheet("color: #000000;")
-        right_layout.addWidget(list_title)
-
-        self.identity_list = QListWidget()
-        self.identity_list.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Bold))
-        self.identity_list.setStyleSheet("""
-            QListWidget {
-                background-color: transparent;
-                border: 3px solid #000000;
-                color: #000000;
-                padding: 5px;
-            }
-            QListWidget::item { 
-                padding: 15px 20px; 
-                border-bottom: 2px solid #000000; 
-            }
-            QListWidget::item:hover {
-                background-color: #E2E8F0;
-            }
-            QListWidget::item:selected { 
-                background: #00E5FF;
-                color: #000000; 
-                border: 2px solid #000000;
-            }
-        """)
-        right_layout.addWidget(self.identity_list)
-        
-        btn_del = StyledButton("REVOKE", is_danger=True)
-        btn_del.clicked.connect(self.delete_selected_identity)
-        right_layout.addWidget(btn_del)
-
-        split_layout.addWidget(left_pane)
-        split_layout.addWidget(right_pane)
-        layout.addLayout(split_layout)
-        
-        self.identity_list.itemSelectionChanged.connect(self.show_identity_preview)
-        self.name_input.textChanged.connect(lambda: self.identity_list.clearSelection())
-        
-        return page
 
     def show_identity_preview(self):
         selected = self.identity_list.selectedItems()
@@ -1021,11 +618,14 @@ class VisionSightGUI(QMainWindow):
             QMessageBox.warning(self, "ERROR", "CAMERA OFFLINE.")
             return
 
+        import cv2
+        import face_recognition
+
         btn = self.sender()
         original_text = btn.text()
         btn.setText("SCANNING...")
         btn.setEnabled(False)
-        app.processEvents()
+        QApplication.processEvents()
 
         frame = self.current_cv_frame
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -1119,33 +719,188 @@ class VisionSightGUI(QMainWindow):
                     Qt.TransformationMode.SmoothTransformation)
                 self.video_label.setPixmap(pm)
         elif getattr(self, "content_stack", None) and getattr(self.content_stack, "currentIndex", lambda: -1)() == 5:
-            pm = QPixmap.fromImage(qt_img).scaled(
-                360, 270, 
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
-                Qt.TransformationMode.SmoothTransformation)
-            self.wiz_video.setPixmap(pm)
+            if hasattr(self, 'wizard_stack') and self.wizard_stack.currentIndex() == 2:
+                pm = QPixmap.fromImage(qt_img).scaled(
+                    360, 270, 
+                    Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
+                    Qt.TransformationMode.SmoothTransformation)
+                self.wiz_video.setPixmap(pm)
+
+    def init_tray(self):
+        self.tray_icon = QSystemTrayIcon(self)
+        
+        if os.path.exists(self.icon_path):
+            self.tray_icon.setIcon(QIcon(self.icon_path))
+        else:
+            self.tray_icon.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+            
+        self.tray_menu = QMenu()
+        
+        self.tray_status_action = QAction("Status: Checking...", self)
+        self.tray_status_action.setEnabled(False)
+        self.tray_menu.addAction(self.tray_status_action)
+        
+        self.tray_menu.addSeparator()
+        
+        open_action = QAction("Open Dashboard", self)
+        open_action.triggered.connect(self.show_and_raise)
+        self.tray_menu.addAction(open_action)
+        
+        settings_action = QAction("Settings", self)
+        settings_action.triggered.connect(self.open_settings_page)
+        self.tray_menu.addAction(settings_action)
+        
+        self.tray_menu.addSeparator()
+        
+        self.start_action = QAction("Start Protection", self)
+        self.start_action.triggered.connect(self.start_daemon_thread)
+        self.tray_menu.addAction(self.start_action)
+        
+        self.stop_action = QAction("Stop Protection", self)
+        self.stop_action.triggered.connect(self.stop_daemon_thread)
+        self.tray_menu.addAction(self.stop_action)
+        
+        self.tray_menu.addSeparator()
+
+        self.logs_menu = QMenu("Recent Logs", self)
+        self.tray_menu.addMenu(self.logs_menu)
+        self.refresh_tray_logs_submenu()
+        
+        self.tray_menu.addSeparator()
+        
+        quit_action = QAction("Quit VisionSight", self)
+        quit_action.triggered.connect(self.quit_app)
+        self.tray_menu.addAction(quit_action)
+        
+        self.tray_icon.setContextMenu(self.tray_menu)
+        self.tray_icon.activated.connect(self.on_tray_activated)
+        
+        self.tray_icon.show()
+
+    def toggle_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
+
+    def set_mac_activation_policy_regular(self):
+        try:
+            from AppKit import NSApplication, NSApplicationActivationPolicyRegular
+            ns_app = NSApplication.sharedApplication()
+            ns_app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+            ns_app.activateIgnoringOtherApps_(True)
+        except Exception as e:
+            print(f"⚠️ Could not set activation policy to Regular: {e}")
+
+    def set_mac_activation_policy_accessory(self):
+        try:
+            from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+            ns_app = NSApplication.sharedApplication()
+            ns_app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+        except Exception as e:
+            print(f"⚠️ Could not set activation policy to Accessory: {e}")
+
+    def show_and_raise(self):
+        self.set_mac_activation_policy_regular()
+        self.show()
+        self.activateWindow()
+        self.raise_()
+        self.switch_to_page(0)
+
+    def open_settings_page(self):
+        self.set_mac_activation_policy_regular()
+        self.show()
+        self.activateWindow()
+        self.raise_()
+        self.switch_to_page(2)
+
+    def on_tray_activated(self, reason):
+        if reason in (QSystemTrayIcon.ActivationReason.DoubleClick, QSystemTrayIcon.ActivationReason.Trigger):
+            if self.isVisible():
+                self.hide()
+                self.stop_camera()
+            else:
+                self.show_and_raise()
+
+    def refresh_tray_logs_submenu(self):
+        self.logs_menu.clear()
+        if not os.path.exists(self.log_path):
+            self.logs_menu.addAction("No log file found.").setEnabled(False)
+            return
+            
+        try:
+            with open(self.log_path, 'r') as f:
+                lines = f.readlines()
+            
+            recent = []
+            for line in reversed(lines):
+                line = line.strip()
+                if line:
+                    clean_line = re.sub(r'[\U00010000-\U0010ffff]', '', line).strip()
+                    for rep in ["✅", "❌", "🛑", "⚠️", "🔒", "🟢", "👁️", "💤", "☀️", "🔄", "🔓"]:
+                        clean_line = clean_line.replace(rep, "")
+                    clean_line = clean_line.strip()
+                    if clean_line:
+                        recent.append(clean_line)
+                        if len(recent) >= 5:
+                            break
+            
+            if not recent:
+                self.logs_menu.addAction("No recent events.").setEnabled(False)
+            else:
+                for log in recent:
+                    action = QAction(log, self)
+                    action.setEnabled(False)
+                    self.logs_menu.addAction(action)
+        except Exception as e:
+            self.logs_menu.addAction(f"Error reading logs: {str(e)}").setEnabled(False)
+
+    def update_tray_daemon_status(self):
+        if not hasattr(self, 'tray_icon') or not self.tray_icon.isVisible():
+            return
+            
+        running = self.is_daemon_running()
+        if not running:
+            self.tray_status_action.setText("Status: OFFLINE")
+            self.start_action.setEnabled(True)
+            self.stop_action.setEnabled(False)
+        else:
+            state = "IDLE"
+            if os.path.exists(self.log_path):
+                with open(self.log_path, 'r') as f:
+                    lines = f.readlines()
+                last_meaningful = ""
+                for line in reversed(lines):
+                    if line.strip():
+                        last_meaningful = line
+                        break
+                
+                if "Lock Detected" in last_meaningful or "System is still locked" in last_meaningful:
+                    state = "LOCKED"
+                elif "SCANNING" in last_meaningful or "Resuming camera scan" in last_meaningful:
+                    state = "ACTIVE"
+                elif "Aborting" in last_meaningful or "cancelled" in last_meaningful or "cooldown" in last_meaningful.lower():
+                    state = "COOLDOWN"
+            
+            self.tray_status_action.setText(f"Status: {state}")
+            self.start_action.setEnabled(False)
+            self.stop_action.setEnabled(True)
+            
+        self.refresh_tray_logs_submenu()
 
     def closeEvent(self, event):
-        """
-        Override close event to hide window instead of quitting.
-        The daemon keeps running in the background. Use the tray icon to quit.
-        """
-        # If no tray icon, allow normal close
         if not hasattr(self, 'tray_icon') or not self.tray_icon.isVisible():
             print("⚠️ No system tray - performing normal quit")
             self.quit_app()
             return
         
         print("🔴 Window closing — hiding to system tray...")
-        
-        # Stop camera to save resources while hidden
         self.stop_camera()
+        import cv2
         cv2.destroyAllWindows()
-        
-        # Hide window instead of closing
         self.hide()
+        self.set_mac_activation_policy_accessory()
         
-        # Show tray notification on first hide
         if not hasattr(self, '_first_hide_done'):
             self.tray_icon.showMessage(
                 "VisionSight",
@@ -1154,55 +909,37 @@ class VisionSightGUI(QMainWindow):
                 2000
             )
             self._first_hide_done = True
-        
-        # Prevent Qt from closing the application
         event.ignore()
     
     def installQuitFilter(self, qapp):
-        """Install an event filter on QApplication so Cmd+Q hides to tray
-        instead of terminating.  macOS sends QEvent::Quit directly to
-        QApplication (bypassing QMainWindow.closeEvent), so this is the
-        ONLY reliable interception point."""
         self._qapp = qapp
         qapp.installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        """Catch QEvent::Quit sent to QApplication (Cmd+Q / applicationShouldTerminate)."""
         if obj is self._qapp and event.type() == QEvent.Type.Quit:
-            # If tray is available, just hide the window — don't quit
             if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
                 self.closeEvent(type('FakeCloseEvent', (), {'ignore': lambda s: None, 'accept': lambda s: None})())
-                return True  # swallow the Quit event
+                return True
         return super().eventFilter(obj, event)
 
     def quit_app(self):
-        """
-        Full teardown — called by the ⏻ QUIT button or tray Quit.
-        MUST use try/finally so os._exit(0) is always reached.
-        Qt silently swallows exceptions thrown inside slots, so without
-        try/finally any error before os._exit(0) would cause a silent no-op.
-        """
         print("🛑 Shutting down VisionSight completely...")
         try:
-            # 1. Stop status timer
             if hasattr(self, 'status_timer') and self.status_timer.isActive():
                 self.status_timer.stop()
 
-            # 2. Abort any active biometric scan (non-blocking abort)
             if hasattr(self, '_scan_thread') and self._scan_thread and self._scan_thread.isRunning():
                 self._scan_thread.abort()
                 self._scan_thread.wait(800)
 
-            # 3. Stop GUI camera
             self.stop_camera()
+            import cv2
             cv2.destroyAllWindows()
 
-            # 4. Stop daemon thread cleanly via DaemonCore.stop()
             if hasattr(self, '_daemon_core') and self._daemon_core:
                 self._daemon_core.stop()
                 self._daemon_core = None
 
-            # 5. Hide tray icon before exit
             if hasattr(self, 'tray_icon'):
                 self.tray_icon.hide()
 
@@ -1210,13 +947,8 @@ class VisionSightGUI(QMainWindow):
         except Exception as e:
             print(f"⚠️ quit_app cleanup error (ignored): {e}")
         finally:
-            # Hard exit — always runs, kills all threads including daemon
             os._exit(0)
 
-    # ----------------------------------------------------
-    # PAGE 3: SETTINGS
-    # ----------------------------------------------------
-    
     def create_setting_row(self, title, desc, widget):
         row = QWidget()
         layout = QHBoxLayout(row)
@@ -1239,130 +971,8 @@ class VisionSightGUI(QMainWindow):
         layout.addWidget(widget)
         return row
 
-    def create_settings_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(30)
-        
-        header_layout = QHBoxLayout()
-        header = QLabel("CONFIGURATION")
-        header.setFont(QFont(".AppleSystemUIFont", 40, QFont.Weight.Black))
-        header.setStyleSheet("color: #000000;")
-        header_layout.addWidget(header)
-        
-        header_layout.addStretch()
-        btn_apply = StyledButton("SAVE SETTINGS", primary=True)
-        btn_apply.setFixedWidth(200)
-        btn_apply.clicked.connect(self.save_preferences)
-        header_layout.addWidget(btn_apply)
-        layout.addLayout(header_layout)
-        
-        card = self.card_frame("#FFFFFF")
-        form_layout = QVBoxLayout(card)
-        form_layout.setContentsMargins(40, 40, 40, 40)
-        form_layout.setSpacing(15)
-
-        self.sliders = {
-            "SCAN WINDOW": ("SECONDS OF ACTIVE SCAN", 2, 6, "4", 1, "VISIONSIGHT_ACTIVATION_WINDOW"),
-            "COOLDOWN": ("SECONDS BEFORE NEXT TRIGGER", 5, 15, "10", 1, "VISIONSIGHT_COOLDOWN"),
-            "IDLE THRESHOLD": ("SECONDS TO IDLE", 2, 10, "4", 1, "VISIONSIGHT_IDLE_THRESHOLD")
-        }
-        
-        self.slider_widgets = {}
-        for k, v in self.sliders.items():
-            s = QSlider(Qt.Orientation.Horizontal)
-            s.setMinimum(v[1])
-            s.setMaximum(v[2])
-            s.setValue(int(os.getenv(v[5], v[3])))
-            s.setFixedWidth(240)
-            s.setStyleSheet("""
-                QSlider::groove:horizontal { border: 3px solid #000000; height: 16px; background: #FFFFFF; }
-                QSlider::handle:horizontal { background: #000000; width: 30px; margin: -5px 0; }
-                QSlider::sub-page:horizontal { background: #FFD500; border-right: 3px solid #000000; }
-            """)
-            val_label = QLabel(f"{s.value()}S")
-            val_label.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Black))
-            val_label.setStyleSheet("color: #000000; min-width: 40px;")
-            
-            s.valueChanged.connect(lambda val, lbl=val_label: lbl.setText(f"{val}S"))
-            
-            w = QWidget()
-            wl = QHBoxLayout(w)
-            wl.setContentsMargins(0,0,0,0)
-            wl.addWidget(s)
-            wl.addSpacing(15)
-            wl.addWidget(val_label)
-            
-            form_layout.addWidget(self.create_setting_row(k, v[0], w))
-            self.slider_widgets[k] = s
-
-        strict_s = QSlider(Qt.Orientation.Horizontal)
-        strict_s.setMinimum(40)
-        strict_s.setMaximum(70)
-        strict_s.setValue(int(float(os.getenv("VISIONSIGHT_TOLERANCE", "0.55")) * 100))
-        strict_s.setFixedWidth(240)
-        strict_s.setStyleSheet("""
-                QSlider::groove:horizontal { border: 3px solid #000000; height: 16px; background: #FFFFFF; }
-                QSlider::handle:horizontal { background: #000000; width: 30px; margin: -5px 0; }
-                QSlider::sub-page:horizontal { background: #00E5FF; border-right: 3px solid #000000; }
-        """)
-        strict_val = QLabel(f"{strict_s.value()/100.0}")
-        strict_val.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Black))
-        strict_val.setStyleSheet("color: #000000; min-width: 40px;")
-        strict_s.valueChanged.connect(lambda val, lbl=strict_val: lbl.setText(f"{val/100.0}"))
-        
-        sw = QWidget()
-        swl = QHBoxLayout(sw)
-        swl.setContentsMargins(0,0,0,0)
-        swl.addWidget(strict_s)
-        swl.addSpacing(15)
-        swl.addWidget(strict_val)
-        
-        form_layout.addWidget(self.create_setting_row("TOLERANCE", "SECURITY STRICTNESS", sw))
-        self.slider_widgets["TOLERANCE"] = strict_s
-
-        combo_style = """
-            QComboBox {
-                background: #FFFFFF; color: #000000; 
-                border: 3px solid #000000; font-size: 16px; font-weight: 900;
-                min-width: 180px;
-                min-height: 46px;
-                padding-left: 15px;
-            }
-            QComboBox::drop-down { border: none; width: 30px; }
-            QComboBox QAbstractItemView {
-                background-color: #FFFFFF;
-                border: 3px solid #000000;
-                color: #000000;
-                selection-background-color: #FFD500;
-                selection-color: #000000;
-            }
-        """
-        self.combo_fps = QComboBox()
-        self.combo_fps.addItems(["Low (5 FPS)", "Medium (10 FPS)", "High (15 FPS)"])
-        self.combo_fps.setStyleSheet(combo_style)
-        current_fps = os.getenv("VISIONSIGHT_FPS", "Medium")
-        self.combo_fps.setCurrentIndex(0 if "Low" in current_fps else 2 if "High" in current_fps else 1)
-        form_layout.addWidget(self.create_setting_row("PROCESSING FPS", "FRAME RATE", self.combo_fps))
-
-        self.combo_res = QComboBox()
-        self.combo_res.addItems(["640x480", "1280x720"])
-        self.combo_res.setStyleSheet(combo_style)
-        self.combo_res.setCurrentIndex(0 if os.getenv("VISIONSIGHT_RESOLUTION", "640x480") == "640x480" else 1)
-        form_layout.addWidget(self.create_setting_row("RESOLUTION", "CAPTURE DEFINITION", self.combo_res))
-
-        self.auto_unlock_toggle = ToggleButton(checked=os.getenv("VISIONSIGHT_AUTO_UNLOCK", "true").lower() == "true")
-        form_layout.addWidget(self.create_setting_row("AUTO UNLOCK", "INJECT PASSWORD", self.auto_unlock_toggle))
-
-
-
-        form_layout.addStretch()
-        layout.addWidget(card)
-        return page
-
     def save_preferences(self):
-        for name, data in self.sliders.items():
+        for name, data in self.page_settings.sliders.items():
             set_key(self.env_path, data[5], str(self.slider_widgets[name].value()))
             
         strictness = str(self.slider_widgets["TOLERANCE"].value() / 100.0)
@@ -1375,61 +985,6 @@ class VisionSightGUI(QMainWindow):
         set_key(self.env_path, "VISIONSIGHT_RESOLUTION", self.combo_res.currentText())
         set_key(self.env_path, "VISIONSIGHT_AUTO_UNLOCK", "true" if self.auto_unlock_toggle.isChecked() else "false")
 
-    def create_security_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(30)
-        
-        header_layout = QHBoxLayout()
-        header = QLabel("SYSTEM SECURITY")
-        header.setFont(QFont(".AppleSystemUIFont", 40, QFont.Weight.Black))
-        header.setStyleSheet("color: #000000;")
-        header_layout.addWidget(header)
-        header_layout.addStretch()
-        layout.addLayout(header_layout)
-        
-        card = self.card_frame("#FFFFFF")
-        form_layout = QVBoxLayout(card)
-        form_layout.setContentsMargins(40, 40, 40, 40)
-        form_layout.setSpacing(25)
-
-        info = QLabel("VISIONSIGHT KEYCHAIN ACCESS")
-        info.setFont(QFont(".AppleSystemUIFont", 24, QFont.Weight.Black))
-        info.setStyleSheet("color: #000000;")
-        form_layout.addWidget(info)
-        
-        desc = QLabel("Your Mac password is required to bypass the Lock Screen immediately upon facial recognition.\nThis string is natively routed and encrypted deep inside the macOS Apple Keychain hardware enclave.\nIt is strictly read-only by the Daemon and is never written to disk or transmitted.")
-        desc.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Bold))
-        desc.setStyleSheet("color: #4B5563; line-height: 1.5;")
-        desc.setWordWrap(True)
-        form_layout.addWidget(desc)
-        
-        form_layout.addSpacing(20)
-
-        self.password_input = QLineEdit()
-        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_input.setPlaceholderText("ENTER YOUR MAC LOGIN PASSWORD...")
-        self.password_input.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Black))
-        self.password_input.setMinimumHeight(60)
-        self.password_input.setStyleSheet("""
-            QLineEdit {
-                padding: 18px; background: #FFFFFF; 
-                border: 4px solid #000000; color: #000000;
-            }
-            QLineEdit:focus { background: #00E5FF; border: 4px solid #000000; }
-        """)
-        form_layout.addWidget(self.password_input)
-        
-        btn_keychain = StyledButton("ENCRYPT TO APPLE KEYCHAIN", primary=True)
-        btn_keychain.setMinimumHeight(60)
-        btn_keychain.clicked.connect(self.update_keychain_password)
-        form_layout.addWidget(btn_keychain)
-
-        form_layout.addStretch()
-        layout.addWidget(card)
-        return page
-
     def update_keychain_password(self):
         mac_password = self.password_input.text()
         if not mac_password:
@@ -1437,97 +992,12 @@ class VisionSightGUI(QMainWindow):
             return
             
         try:
-            import getpass
             subprocess.run(['security', 'delete-generic-password', '-a', os.getlogin(), '-s', 'VisionSightDaemon'], capture_output=True)
             subprocess.run(['security', 'add-generic-password', '-a', os.getlogin(), '-s', 'VisionSightDaemon', '-w', mac_password], check=True)
             QMessageBox.information(self, "SUCCESS", "PASSWORD SECURELY ENCRYPTED IN KEYCHAIN.")
             self.password_input.clear()
         except Exception as e:
             QMessageBox.warning(self, "ERROR", f"FAILED TO UPDATE KEYCHAIN: {e}")
-
-    # ----------------------------------------------------
-    # PAGE 4: LOGS
-    # ----------------------------------------------------
-    def create_logs_page(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(30)
-        
-        header_layout = QHBoxLayout()
-        header = QLabel("SYSTEM AUDIT")
-        header.setFont(QFont(".AppleSystemUIFont", 40, QFont.Weight.Black))
-        header.setStyleSheet("color: #000000;")
-        header_layout.addWidget(header)
-        header_layout.addStretch()
-        
-        self.log_filter = QComboBox()
-        self.log_filter.addItems(["ALL", "SUCCESS", "DENIED"])
-        self.log_filter.setStyleSheet("""
-            QComboBox {
-                background: #FFFFFF; color: #000000; 
-                border: 3px solid #000000; font-size: 16px; font-weight: 900;
-                min-width: 140px;
-                min-height: 46px;
-                padding-left: 15px;
-            }
-            QComboBox::drop-down { border: none; width: 30px; }
-            QComboBox QAbstractItemView {
-                background-color: #FFFFFF;
-                border: 3px solid #000000;
-                color: #000000;
-                selection-background-color: #FFD500;
-                selection-color: #000000;
-            }
-        """)
-        self.log_filter.currentTextChanged.connect(self.refresh_logs)
-        header_layout.addWidget(self.log_filter)
-        
-        btn_clear = StyledButton("FLUSH", is_danger=True)
-        btn_clear.clicked.connect(self.clear_logs)
-        header_layout.addWidget(btn_clear)
-        
-        layout.addLayout(header_layout)
-
-        card = self.card_frame("#FFFFFF")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(20, 20, 20, 20)
-
-        self.log_table = QTableWidget(0, 3)
-        self.log_table.setHorizontalHeaderLabels(["TIMEFRAME", "RESULT", "EVENT LOG"])
-        self.log_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.log_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.log_table.setShowGrid(False)
-        self.log_table.setAlternatingRowColors(True)
-        self.log_table.verticalHeader().setVisible(False)
-        self.log_table.setFont(QFont(".AppleSystemUIFont", 14, QFont.Weight.Bold))
-        self.log_table.setStyleSheet("""
-            QTableWidget {
-                background-color: transparent;
-                border: none;
-                color: #000000;
-            }
-            QTableWidget::item {
-                padding: 15px;
-                border-bottom: 2px solid #000000;
-            }
-            QTableWidget::item:selected {
-                background-color: #FFD500;
-            }
-            QHeaderView::section {
-                background-color: transparent;
-                padding: 15px;
-                border: none;
-                border-bottom: 3px solid #000000;
-                font-weight: 900;
-                color: #000000;
-                font-size: 14px;
-            }
-        """)
-        card_layout.addWidget(self.log_table)
-        layout.addWidget(card)
-
-        return page
 
     def refresh_logs(self):
         self.log_table.setRowCount(0)
@@ -1556,8 +1026,7 @@ class VisionSightGUI(QMainWindow):
             if filter_type == "SUCCESS" and status != "SUCCESS": continue
             if filter_type == "DENIED" and status != "DENIED": continue
                 
-            # STRIP ALL EMOJIS (Neo-Brutalism text-only requirement)
-            clean_str = re.sub(r'[\U00010000-\U0010ffff]', '', line) # Strips emojis
+            clean_str = re.sub(r'[\U00010000-\U0010ffff]', '', line)
             clean_str = clean_str.replace("✅", "").replace("❌", "").replace("🛑", "").replace("⚠️", "").replace("🔒", "").replace("🟢", "").replace("👁️", "").strip()
                 
             parsed_logs.append(("RECENT", status, clean_str))
@@ -1570,9 +1039,9 @@ class VisionSightGUI(QMainWindow):
             status_item = QTableWidgetItem(log[1])
             status_item.setFont(QFont(".AppleSystemUIFont", 14, QFont.Weight.Black))
             if log[1] == "SUCCESS":
-                status_item.setBackground(QColor("#FFD500")) # Yellow
+                status_item.setBackground(QColor("#FFD500"))
             elif log[1] == "DENIED":
-                status_item.setBackground(QColor("#FF5555")) # Pinkish Red
+                status_item.setBackground(QColor("#FF5555"))
                 status_item.setForeground(QColor("#FFFFFF"))
             else:
                 status_item.setBackground(QColor("#E2E8F0"))
@@ -1588,26 +1057,15 @@ class VisionSightGUI(QMainWindow):
             self.refresh_logs()
 
 if __name__ == "__main__":
-    # ── Frozen-mode (PyInstaller .app) setup ──────────────────────────────────
-    # When running as a bundled .app with LSUIElement=True, PyInstaller's
-    # bootloader creates the NSApplication instance before Python runs.
-    # We must explicitly set the activation policy to Accessory to ensure
-    # the system tray icon appears while staying out of the Dock.
-    
-    # ── macOS Activation Policy (Hide from Dock) ──────────────────────────────
-    # Set the app to "Accessory" mode so it doesn't show up in the Dock/Switcher,
-    # but still shows the system tray icon.
     try:
         from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
         ns_app = NSApplication.sharedApplication()
         ns_app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
         print("✅ NSApplication policy set to Accessory (Hidden from Dock)")
     except Exception as e:
-        # This will fail gracefully on non-macOS or if pyobjc is not installed
         print(f"⚠️ Could not set activation policy: {e}")
 
     if getattr(sys, 'frozen', False):
-        # Redirect stdout/stderr to log file FIRST
         import system.paths as _log_paths
         _log_file_path = _log_paths.get_log_path()
         _log_file = open(_log_file_path, 'a', buffering=1)
@@ -1617,26 +1075,14 @@ if __name__ == "__main__":
         print("VisionSight bundled app started")
         print("=" * 50)
 
-        # ── AVFoundation camera probe ─────────────────────────────────────
-        # macOS TCC only triggers the camera permission dialog when it sees an
-        # AVFoundation device-discovery call from a properly bundled .app.
-        # OpenCV's cv2.VideoCapture uses AVFoundation internally, but in a
-        # PyInstaller bundle the framework may not be loaded early enough for
-        # TCC to recognize the access attempt. This explicit probe ensures:
-        #   1. AVFoundation framework is loaded into the process
-        #   2. TCC sees the camera authorization request from our bundle ID
-        #   3. The permission dialog appears on first launch
         try:
             import AVFoundation
             auth_status = AVFoundation.AVCaptureDevice.authorizationStatusForMediaType_(
                 AVFoundation.AVMediaTypeVideo
             )
             print(f"📷 [FROZEN] Camera auth status: {auth_status}")
-            # 0 = NotDetermined → request permission
-            # 1 = Restricted, 2 = Denied, 3 = Authorized
             if auth_status == 0:
                 print("📷 [FROZEN] Requesting camera permission via AVFoundation...")
-                # This triggers the native macOS camera permission dialog
                 AVFoundation.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
                     AVFoundation.AVMediaTypeVideo,
                     lambda granted: print(f"📷 Camera permission {'granted' if granted else 'denied'}")
@@ -1651,10 +1097,8 @@ if __name__ == "__main__":
         print(f"📂 [FROZEN] _MEIPASS = {sys._MEIPASS}")
 
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)  # Allow background execution when GUI is hidden
+    app.setQuitOnLastWindowClosed(False)
 
-    # Set app icon on QApplication (required for bundled .app — QMainWindow icon
-    # alone is not enough, macOS reads it from the QApplication instance)
     import system.paths as _paths
     _icon_path = _paths.get_icon_path()
     if os.path.exists(_icon_path):
@@ -1664,9 +1108,15 @@ if __name__ == "__main__":
         print(f"⚠️ Icon not found at: {_icon_path}")
 
     window = VisionSightGUI()
-    # Install Cmd+Q interceptor BEFORE showing the window
     window.installQuitFilter(app)
-    window.show()
+    
+    if ("--tray" in sys.argv or "--minimized" in sys.argv) and not window.is_onboarding_needed():
+        print("📥 Starting minimized in the system tray...")
+        window.stop_camera()
+        window.set_mac_activation_policy_accessory()
+    else:
+        window.set_mac_activation_policy_regular()
+        window.show()
+        
     app.exec()
     os._exit(0)
-
