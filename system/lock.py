@@ -218,7 +218,7 @@ class SystemController:
             ev = Quartz.CGEventCreateKeyboardEvent(source, 49, down)
             Quartz.CGEventPost(tap, ev)
 
-        time.sleep(0.8)
+        time.sleep(0.3)
 
         # Type password
         for char in password:
@@ -226,7 +226,7 @@ class SystemController:
                 ev = Quartz.CGEventCreateKeyboardEvent(source, 0, down)
                 Quartz.CGEventKeyboardSetUnicodeString(ev, 1, char)
                 Quartz.CGEventPost(tap, ev)
-                time.sleep(0.02)
+                time.sleep(0.01)
 
         time.sleep(0.05)
 
