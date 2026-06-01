@@ -18,7 +18,11 @@ import time
 import threading
 
 import objc
-from Foundation import NSDistributedNotificationCenter, NSObject
+from Foundation import (
+    NSDistributedNotificationCenter,
+    NSObject,
+    NSNotificationSuspensionBehaviorDeliverImmediately,
+)
 from AppKit import (
     NSWorkspace,
     NSWorkspaceScreensDidSleepNotification,
@@ -48,6 +52,9 @@ class DaemonBridge(QObject):
 
     # → main thread: abort any currently active scan immediately
     abort_requested = pyqtSignal()
+
+    # → main thread: show and raise the GUI window
+    show_gui_requested = pyqtSignal()
 
 
 # ── Cocoa Notification Listener ───────────────────────────────────────────────
@@ -81,6 +88,10 @@ class OSNotificationListener(NSObject):
     def screenUnlocked_(self, notification):
         print("\n🔓 [OS EVENT] Screen Unlocked externally.")
         self._bridge.abort_requested.emit()
+
+    def showGUI_(self, notification):
+        print("\n🖥️ [OS EVENT] Received show GUI notification. Emitting show_gui_requested...")
+        self._bridge.show_gui_requested.emit()
 
     def screenAsleep_(self, notification):
         print("\n💤 [OS EVENT] Display Sleep Detected.")
@@ -171,6 +182,13 @@ class DaemonCore:
         )
         dist_nc.addObserver_selector_name_object_(
             listener, "screenUnlocked:", "com.apple.screenIsUnlocked", None
+        )
+        dist_nc.addObserver_selector_name_object_suspensionBehavior_(
+            listener,
+            "showGUI:",
+            "com.visionsight.show_gui",
+            None,
+            NSNotificationSuspensionBehaviorDeliverImmediately,
         )
 
         # 2. Display Sleep / Wake (workspace notifications)
