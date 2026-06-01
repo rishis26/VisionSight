@@ -45,6 +45,7 @@ class VisionSightGUI(QMainWindow):
         self.camera_thread = None
         self.current_cv_frame = None
         self.identity_preview_mode = False
+        self._face_detect_counter = 0   # throttle live face-detection checks
 
         self._daemon_core: DaemonCore | None = None
         self._scan_thread: DaemonScanThread | None = None
@@ -121,6 +122,9 @@ class VisionSightGUI(QMainWindow):
         self.video_label = self.page_users.video_label
         self.name_input = self.page_users.name_input
         self.identity_list = self.page_users.identity_list
+        self.face_status_label = self.page_users.face_status_label
+
+        self.wiz_face_status_label = self.page_onboarding.wiz_face_status_label
         
         self.slider_widgets = self.page_settings.slider_widgets
         self.combo_fps = self.page_settings.combo_fps
@@ -452,6 +456,7 @@ class VisionSightGUI(QMainWindow):
         self._daemon_core = DaemonCore()
         self._daemon_core.bridge.scan_requested.connect(self._on_daemon_scan_requested)
         self._daemon_core.bridge.abort_requested.connect(self._on_daemon_abort_requested)
+        self._daemon_core.bridge.show_gui_requested.connect(self.show_and_raise)
         self._daemon_core.start()
 
     def stop_daemon_thread(self):
@@ -581,7 +586,7 @@ class VisionSightGUI(QMainWindow):
         
         if os.path.exists(img_path):
             self.video_label.setStyleSheet("")
-            pixmap = QPixmap(img_path).scaled(360, 270, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+            pixmap = QPixmap(img_path).scaled(360, 270, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.video_label.setPixmap(pixmap)
         else:
             self.video_label.clear()
@@ -701,13 +706,61 @@ class VisionSightGUI(QMainWindow):
         self.video_label.clear()
         self.current_cv_frame = None
 
+    def _update_face_status_badge(self, raw_frame, badge_label):
+        """Run a quick HOG face-detect on the current frame and update the badge.
+        Called at most every 10 frames (~300 ms) to keep the UI smooth."""
+        import cv2
+        import face_recognition
+
+        try:
+            small = cv2.resize(raw_frame, (0, 0), fx=0.5, fy=0.5)
+            rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            locs = face_recognition.face_locations(rgb, model="hog")
+        except Exception:
+            locs = []
+
+        if not locs:
+            badge_label.setText("\u274c  NO FACE DETECTED")
+            badge_label.setStyleSheet("""
+                QLabel {
+                    background-color: #D32F2F;
+                    color: #FFFFFF;
+                    border-radius: 8px;
+                    padding: 4px 14px;
+                    letter-spacing: 1px;
+                }
+            """)
+        elif len(locs) > 1:
+            badge_label.setText("\u26a0\ufe0f  MULTIPLE FACES")
+            badge_label.setStyleSheet("""
+                QLabel {
+                    background-color: #E65100;
+                    color: #FFFFFF;
+                    border-radius: 8px;
+                    padding: 4px 14px;
+                    letter-spacing: 1px;
+                }
+            """)
+        else:
+            badge_label.setText("\u2705  FACE DETECTED \u2014 READY")
+            badge_label.setStyleSheet("""
+                QLabel {
+                    background-color: #2E7D32;
+                    color: #FFFFFF;
+                    border-radius: 8px;
+                    padding: 4px 14px;
+                    letter-spacing: 1px;
+                }
+            """)
+
     def update_frame(self, qt_img, raw_frame):
         self.current_cv_frame = raw_frame
+        self._face_detect_counter += 1
         
         if self.content_stack.currentIndex() == 0:
             pm = QPixmap.fromImage(qt_img).scaled(
                 self.dash_video.width(), self.dash_video.height(), 
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
+                Qt.AspectRatioMode.KeepAspectRatio, 
                 Qt.TransformationMode.SmoothTransformation)
             self.dash_video.setPixmap(pm)
         elif self.content_stack.currentIndex() == 1:
@@ -715,16 +768,34 @@ class VisionSightGUI(QMainWindow):
                 self.video_label.setStyleSheet("")
                 pm = QPixmap.fromImage(qt_img).scaled(
                     360, 270, 
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
+                    Qt.AspectRatioMode.KeepAspectRatio, 
                     Qt.TransformationMode.SmoothTransformation)
                 self.video_label.setPixmap(pm)
+                # Throttled live face-detection badge (every 10 frames)
+                if self._face_detect_counter % 10 == 0:
+                    self._update_face_status_badge(raw_frame, self.face_status_label)
+            else:
+                # Preview mode: reset badge to neutral
+                self.face_status_label.setText("\U0001f441  IDENTITY PREVIEW")
+                self.face_status_label.setStyleSheet("""
+                    QLabel {
+                        background-color: #333333;
+                        color: #FFFFFF;
+                        border-radius: 8px;
+                        padding: 4px 14px;
+                        letter-spacing: 1px;
+                    }
+                """)
         elif getattr(self, "content_stack", None) and getattr(self.content_stack, "currentIndex", lambda: -1)() == 5:
             if hasattr(self, 'wizard_stack') and self.wizard_stack.currentIndex() == 2:
                 pm = QPixmap.fromImage(qt_img).scaled(
                     360, 270, 
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
+                    Qt.AspectRatioMode.KeepAspectRatio, 
                     Qt.TransformationMode.SmoothTransformation)
                 self.wiz_video.setPixmap(pm)
+                # Throttled live face-detection badge for onboarding
+                if self._face_detect_counter % 10 == 0:
+                    self._update_face_status_badge(raw_frame, self.wiz_face_status_label)
 
     def init_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
@@ -801,6 +872,7 @@ class VisionSightGUI(QMainWindow):
             print(f"⚠️ Could not set activation policy to Accessory: {e}")
 
     def show_and_raise(self):
+        print("🖥️ [GUI EVENT] Raising dashboard GUI window to front...")
         self.set_mac_activation_policy_regular()
         self.show()
         self.activateWindow()
