@@ -16,7 +16,7 @@ from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QIcon, QAction, QKeySequ
 from dotenv import load_dotenv, set_key
 
 from main import DaemonCore
-from gui.widgets import apply_shadow, SolidFrame, ToggleButton, StyledButton, NavButton
+from gui.widgets import apply_neumorphic_shadow, LiquidFrame, LiquidInput, ToggleButton, StyledButton, NavButton
 from gui.threads import CameraThread, DaemonScanThread
 from gui.pages import (DashboardPage, IdentitiesPage, SettingsPage, 
                        SecurityPage, LogsPage, OnboardingPage)
@@ -86,7 +86,8 @@ class VisionSightGUI(QMainWindow):
             QTimer.singleShot(800, self.start_daemon_thread)
 
     def init_ui(self):
-        main_widget = SolidFrame()
+        main_widget = QFrame()
+        main_widget.setStyleSheet("background-color: #E0E5EC;") # Liquid Morphism Base
         main_layout = QHBoxLayout(main_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -332,8 +333,8 @@ class VisionSightGUI(QMainWindow):
         sidebar.setFixedWidth(280)
         sidebar.setStyleSheet("""
             .QFrame {
-                background-color: #FFFFFF;
-                border-right: 4px solid #000000;
+                background-color: #E0E5EC;
+                border-right: 2px solid #FFFFFF;
             }
         """)
         layout = QVBoxLayout(sidebar)
@@ -352,9 +353,9 @@ class VisionSightGUI(QMainWindow):
             title_layout.addWidget(logo)
             
         title_text_layout = QVBoxLayout()
-        title = QLabel("VISIONSIGHT")
-        title.setFont(QFont(".AppleSystemUIFont", 20, QFont.Weight.Black))
-        title.setStyleSheet("color: #000000; letter-spacing: 2px;")
+        title = QLabel("VisionSight")
+        title.setFont(QFont(".AppleSystemUIFont", 22, QFont.Weight.Bold))
+        title.setStyleSheet("color: #000000; letter-spacing: -0.5px;")
         
         title_text_layout.addWidget(title)
         title_text_layout.setSpacing(0)
@@ -377,37 +378,35 @@ class VisionSightGUI(QMainWindow):
         
         layout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
 
-        btn_quit = QPushButton("⏻  QUIT VISIONSIGHT")
+        btn_quit = QPushButton("Quit VisionSight")
         btn_quit.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_quit.setFont(QFont(".AppleSystemUIFont", 13, QFont.Weight.Black))
+        btn_quit.setFont(QFont(".AppleSystemUIFont", 14, QFont.Weight.Medium))
         btn_quit.setStyleSheet("""
             QPushButton {
                 text-align: center;
-                padding: 12px 16px;
-                background: #FF5555;
-                color: #FFFFFF;
-                font-size: 13px;
-                font-weight: 900;
-                border: 3px solid #000000;
+                padding: 10px 16px;
+                background: #FFFFFF;
+                color: #FF3B30;
+                border: 1px solid #E5E5EA;
+                border-radius: 8px;
                 margin-bottom: 10px;
             }
-            QPushButton:hover { background: #000000; color: #FF5555; }
-            QPushButton:pressed { background: #FF5555; color: #000000; }
+            QPushButton:hover { background: #FF3B30; color: #FFFFFF; border: none; }
+            QPushButton:pressed { opacity: 0.8; }
         """)
         btn_quit.clicked.connect(self.quit_app)
-        apply_shadow(btn_quit, 0, 4, 4, 255, "#000000")
+        apply_neumorphic_shadow(btn_quit, 10, 2)
         layout.addWidget(btn_quit)
 
-        footer = QLabel("VERSION 5.0\nMAIN TERMINAL")
-        footer.setFont(QFont(".AppleSystemUIFont", 12, QFont.Weight.Black))
-        footer.setStyleSheet("color: #000000; border: 3px solid #000000; padding: 10px; background: #FFD500;")
+        footer = QLabel("Version 5.0 • Main Terminal")
+        footer.setFont(QFont(".AppleSystemUIFont", 11, QFont.Weight.Medium))
+        footer.setStyleSheet("color: #8E8E93; padding: 10px; background: transparent;")
         footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        apply_shadow(footer, 0, 4, 4, 255, "#000000")
         layout.addWidget(footer)
 
-        credit = QLabel('A PROJECT BY<br><a href="https://github.com/rishis26" style="color:#000000; font-weight:900;">RISHI SHAH ↗</a>')
-        credit.setFont(QFont(".AppleSystemUIFont", 11, QFont.Weight.Bold))
-        credit.setStyleSheet("QLabel { color: #000000; padding: 8px 4px 0px 4px; text-align: center; }")
+        credit = QLabel('A project by <a href="https://github.com/rishis26" style="color:#007AFF; text-decoration:none;">Rishi Shah</a>')
+        credit.setFont(QFont(".AppleSystemUIFont", 11, QFont.Weight.Medium))
+        credit.setStyleSheet("QLabel { color: #8E8E93; padding: 4px; text-align: center; }")
         credit.setAlignment(Qt.AlignmentFlag.AlignCenter)
         credit.setOpenExternalLinks(True)
         credit.setTextFormat(Qt.TextFormat.RichText)
@@ -415,17 +414,8 @@ class VisionSightGUI(QMainWindow):
 
         return sidebar
 
-    def card_frame(self, bg_color="#FFFFFF"):
-        card = QFrame()
-        card.setStyleSheet(f"""
-            .QFrame {{
-                background-color: {bg_color};
-                border: 4px solid #000000;
-                border-radius: 0px;
-            }}
-        """)
-        apply_shadow(card, 0, 8, 8, 255, "#000000")
-        return card
+    def card_frame(self, bg_color="#E0E5EC"):
+        return LiquidFrame(radius=24)
 
     def switch_to_page(self, index):
         for i, btn in enumerate(self.nav_btns):
