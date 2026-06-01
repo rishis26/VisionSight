@@ -5,18 +5,23 @@ import subprocess
 import time
 import signal
 
-# Get project root
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Get project root (following symlinks if globally installed)
+BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 VENV_PYTHON = os.path.join(BASE_DIR, ".venv", "bin", "python3")
-if not os.path.exists(VENV_PYTHON):
-    VENV_PYTHON = "python3" # fallback to system python
+
+# Auto-re-execute using the virtual environment's Python interpreter if it exists
+if os.path.exists(VENV_PYTHON) and sys.executable != VENV_PYTHON:
+    os.execv(VENV_PYTHON, [VENV_PYTHON] + sys.argv)
+
+# Add project root to sys.path so modules can be imported
+sys.path.append(BASE_DIR)
 
 def get_running_pids():
     pids = []
     try:
         output = subprocess.check_output(["ps", "-ef"]).decode("utf-8")
         for line in output.splitlines():
-            # Check for gui/app.py but exclude this script or grep
+            # Check for gui/app.py but exclude grep and self
             if "gui/app.py" in line and "grep" not in line and "visionsight" not in line:
                 parts = line.split()
                 if len(parts) > 1:
@@ -67,12 +72,202 @@ def print_status():
     else:
         print("VisionSight protection daemon is INACTIVE.")
 
+def list_identities():
+    import pickle
+    import system.paths as paths
+    encodings_path = paths.get_encodings_path()
+    if not os.path.exists(encodings_path):
+        print("No registered identities found.")
+        return
+    try:
+        with open(encodings_path, "rb") as f:
+            data = pickle.load(f)
+            if not data:
+                print("No registered identities found.")
+            else:
+                print("Registered Identities:")
+                for name in data.keys():
+                    print(f"  - {name}")
+    except Exception as e:
+        print(f"Error reading encodings: {e}")
+
+def register_face_cli(name):
+    import cv2
+    import face_recognition
+    import pickle
+    import system.paths as paths
+    
+    encodings_path = paths.get_encodings_path()
+    faces_dir = paths.get_known_faces_dir()
+    os.makedirs(faces_dir, exist_ok=True)
+    
+    print(f"Registering face for '{name}'...")
+    print("Opening camera (press Spacebar to capture, Esc to abort)...")
+    cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
+    if not cap.isOpened():
+        print("Error: Could not open camera.")
+        return
+        
+    captured_frame = None
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Error: Failed to read frame.")
+            break
+            
+        mirror = cv2.flip(frame, 1)
+        cv2.imshow("VisionSight CLI - Register Face", mirror)
+        key = cv2.waitKey(1) & 0xFF
+        if key == 32: # Spacebar
+            captured_frame = frame
+            break
+        elif key == 27: # Esc
+            break
+            
+    cap.release()
+    cv2.destroyAllWindows()
+    cv2.waitKey(1)
+    
+    if captured_frame is None:
+        print("Registration aborted by user.")
+        return
+        
+    rgb_frame = cv2.cvtColor(captured_frame, cv2.COLOR_BGR2RGB)
+    locs = face_recognition.face_locations(rgb_frame)
+    if not locs:
+        print("Error: No face detected in capture. Please try again.")
+        return
+    if len(locs) > 1:
+        print("Error: Multiple faces detected. Please make sure only one person is in view.")
+        return
+        
+    encs = face_recognition.face_encodings(rgb_frame, locs)
+    if encs:
+        data = {}
+        if os.path.exists(encodings_path):
+            try:
+                with open(encodings_path, "rb") as f:
+                    data = pickle.load(f)
+            except Exception:
+                pass
+        
+        data[name] = encs[0]
+        os.makedirs(os.path.dirname(encodings_path), exist_ok=True)
+        with open(encodings_path, "wb") as f:
+            pickle.dump(data, f)
+            
+        img_path = os.path.join(faces_dir, f"{name}.jpg")
+        cv2.imwrite(img_path, captured_frame)
+        print(f"Success: Biometric profile for '{name}' secured!")
+    else:
+        print("Error: Failed to encode face.")
+
+def remove_identity(name):
+    import pickle
+    import system.paths as paths
+    encodings_path = paths.get_encodings_path()
+    faces_dir = paths.get_known_faces_dir()
+    if not os.path.exists(encodings_path):
+        print("No registered identities found.")
+        return
+    try:
+        with open(encodings_path, "rb") as f:
+            data = pickle.load(f)
+        if name in data:
+            del data[name]
+            with open(encodings_path, "wb") as f:
+                pickle.dump(data, f)
+            img_path = os.path.join(faces_dir, f"{name}.jpg")
+            if os.path.exists(img_path):
+                os.remove(img_path)
+            print(f"Identity '{name}' successfully removed.")
+        else:
+            print(f"Identity '{name}' not found.")
+    except Exception as e:
+        print(f"Error updating encodings: {e}")
+
+def handle_config(args):
+    import system.paths as paths
+    from dotenv import load_dotenv, set_key
+    env_path = paths.get_env_path()
+    load_dotenv(env_path)
+    
+    if len(args) == 0 or args[0] == "list":
+        print("Current Configurations:")
+        print(f"  VISIONSIGHT_CAMERA       = {os.getenv('VISIONSIGHT_CAMERA', '0')}")
+        print(f"  VISIONSIGHT_TOLERANCE    = {os.getenv('VISIONSIGHT_TOLERANCE', '0.55')}")
+        print(f"  VISIONSIGHT_AUTO_UNLOCK  = {os.getenv('VISIONSIGHT_AUTO_UNLOCK', 'true')}")
+        print(f"  VISIONSIGHT_COOLDOWN     = {os.getenv('VISIONSIGHT_COOLDOWN', '10')}")
+        print(f"  VISIONSIGHT_FPS          = {os.getenv('VISIONSIGHT_FPS', 'Medium')}")
+        print(f"  VISIONSIGHT_RESOLUTION   = {os.getenv('VISIONSIGHT_RESOLUTION', '640x480')}")
+    elif args[0] == "set" and len(args) >= 3:
+        key = args[1].upper()
+        if not key.startswith("VISIONSIGHT_"):
+            key = "VISIONSIGHT_" + key
+        val = args[2]
+        set_key(env_path, key, val)
+        print(f"Config updated: {key} = {val}")
+    else:
+        print("Usage:")
+        print("  visionsight config list          List all config values")
+        print("  visionsight config set <key> <val>  Update a config value")
+
+def view_logs():
+    import system.paths as paths
+    log_path = paths.get_log_path()
+    if not os.path.exists(log_path):
+        print("No log file found.")
+        return
+    try:
+        with open(log_path, 'r') as f:
+            lines = f.readlines()
+        print("Recent logs (last 20 lines):")
+        for line in lines[-20:]:
+            print(line.strip())
+    except Exception as e:
+        print(f"Error reading logs: {e}")
+
+def test_recognition():
+    from face_auth.verify import FaceVerifier
+    from system.lock import SystemController
+    print("Starting one-time CLI authentication test...")
+    verifier = FaceVerifier(headless=False)
+    result = verifier.authenticate_once(SystemController(), use_esc_hook=True, defer_unlock=True)
+    if result == "success":
+        print(f"\n✅ Test Successful: Authenticated as '{verifier.auth_name}'!")
+    elif result == "rejected":
+        print("\n🛑 Test Aborted by user.")
+    else:
+        print(f"\n⚠️ Test Finished. Status: {result}")
+
+def install_global_cli():
+    script_path = os.path.join(BASE_DIR, "visionsight")
+    dest_dir = "/usr/local/bin"
+    dest_path = os.path.join(dest_dir, "visionsight")
+    
+    print(f"Installing visionsight CLI to {dest_path}...")
+    try:
+        if not os.path.exists(dest_dir):
+            print(f"Directory {dest_dir} does not exist. Creating it...")
+            os.makedirs(dest_dir, exist_ok=True)
+            
+        if os.path.exists(dest_path) or os.path.islink(dest_path):
+            os.remove(dest_path)
+            
+        os.symlink(script_path, dest_path)
+        print("\n✅ Success: visionsight is now installed globally!")
+        print("You can run it from any directory by typing 'visionsight'!")
+    except Exception as e:
+        print(f"\n⚠️ Error installing symlink: {e}")
+        print("Please try running with sudo or manually create the symlink:")
+        print(f"  sudo ln -sf {script_path} {dest_path}")
+
 def main():
     if len(sys.argv) < 2:
         launch_gui(minimized=False)
         return
         
-    cmd = sys.argv[1]
+    cmd = sys.argv[1].lower()
     if cmd == "setup":
         run_setup()
     elif cmd == "start":
@@ -85,16 +280,45 @@ def main():
         print_status()
     elif cmd in ("version", "--version", "-v"):
         print("VisionSight Version 5.0")
+    elif cmd == "list":
+        list_identities()
+    elif cmd == "register":
+        if len(sys.argv) < 3:
+            print("Error: Name required for registration.")
+            print("Usage: visionsight register <name>")
+            return
+        register_face_cli(sys.argv[2])
+    elif cmd in ("remove", "delete"):
+        if len(sys.argv) < 3:
+            print("Error: Name required for removal.")
+            print("Usage: visionsight remove <name>")
+            return
+        remove_identity(sys.argv[2])
+    elif cmd == "config":
+        handle_config(sys.argv[2:])
+    elif cmd == "logs":
+        view_logs()
+    elif cmd == "test":
+        test_recognition()
+    elif cmd == "install":
+        install_global_cli()
     elif cmd in ("--help", "-h", "help"):
         print("VisionSight CLI Helper")
         print("Usage:")
-        print("  visionsight          Launch VisionSight dashboard")
-        print("  visionsight gui      Launch VisionSight dashboard")
+        print("  visionsight          Launch VisionSight dashboard GUI")
+        print("  visionsight gui      Launch VisionSight dashboard GUI")
         print("  visionsight setup    Run keychain password setup wizard")
         print("  visionsight start    Start protection (runs minimized in tray)")
         print("  visionsight stop     Stop protection daemon")
         print("  visionsight status   Show process state and active PIDs")
         print("  visionsight version  Show version information")
+        print("  visionsight list     List all registered identities")
+        print("  visionsight register <name>  Register a new face from the terminal")
+        print("  visionsight remove <name>    Remove a registered identity")
+        print("  visionsight config   List or set configurations")
+        print("  visionsight logs     View recent logs")
+        print("  visionsight test     Perform a one-time face recognition test")
+        print("  visionsight install  Install the 'visionsight' CLI tool globally")
         
         script_path = os.path.join(BASE_DIR, "visionsight")
         print("\nGlobal Shell Integration:")
