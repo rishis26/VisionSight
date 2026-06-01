@@ -247,23 +247,33 @@ def install_global_cli():
     dest_dir = "/usr/local/bin"
     dest_path = os.path.join(dest_dir, "visionsight")
     
-    # ── Step 1: Global symlink ────────────────────────────────────────────────
+    # ── Step 1: Global symlink (uses sudo automatically if needed) ────────────
     print(f"Installing visionsight CLI to {dest_path}...")
     symlink_ok = False
     try:
+        # First try without sudo
         if not os.path.exists(dest_dir):
-            print(f"Directory {dest_dir} does not exist. Creating it...")
             os.makedirs(dest_dir, exist_ok=True)
-            
         if os.path.exists(dest_path) or os.path.islink(dest_path):
             os.remove(dest_path)
-            
         os.symlink(script_path, dest_path)
         print("✅ Symlink created: visionsight is now available as a global command.")
         symlink_ok = True
+    except PermissionError:
+        # /usr/local/bin needs sudo on macOS — prompt the user transparently
+        print("🔑 Admin permission required. You may be prompted for your password...")
+        result = subprocess.run(
+            ["sudo", "ln", "-sf", script_path, dest_path],
+            # Let sudo talk directly to the terminal so the password prompt works
+        )
+        if result.returncode == 0:
+            print("✅ Symlink created: visionsight is now available as a global command.")
+            symlink_ok = True
+        else:
+            print("⚠️ sudo failed. Try manually:")
+            print(f"  sudo ln -sf {script_path} {dest_path}")
     except Exception as e:
-        print(f"\n⚠️ Error installing symlink: {e}")
-        print("Please try running with sudo or manually create the symlink:")
+        print(f"⚠️ Unexpected error: {e}")
         print(f"  sudo ln -sf {script_path} {dest_path}")
 
     # ── Step 2: Write `alias vs="visionsight"` to ~/.zshrc ───────────────────
