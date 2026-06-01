@@ -33,7 +33,16 @@ def get_running_pids():
 def launch_gui(minimized=False):
     pids = get_running_pids()
     if pids:
-        print(f"VisionSight is already running (PID: {pids[0]}).")
+        if minimized:
+            print(f"VisionSight is already running (PID: {pids[0]}).")
+        else:
+            print(f"VisionSight is already running (PID: {pids[0]}). Sending signal to show dashboard GUI...")
+            try:
+                from Foundation import NSDistributedNotificationCenter
+                dist_nc = NSDistributedNotificationCenter.defaultCenter()
+                dist_nc.postNotificationName_object_userInfo_("com.visionsight.show_gui", None, None)
+            except Exception as e:
+                print(f"Error bringing GUI to front: {e}")
         return
         
     cmd = [VENV_PYTHON, os.path.join(BASE_DIR, "gui", "app.py")]
