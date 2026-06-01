@@ -58,11 +58,16 @@ class FaceVerifier:
         if not os.path.exists(self.encodings_path):
             print(f"ERROR: Encodings file not found at {self.encodings_path}")
             return
-        with open(self.encodings_path, "rb") as f:
-            data = pickle.load(f)
-            self.known_names = list(data.keys())
-            self.known_encodings = list(data.values())
-            print(f"Loaded {len(self.known_names)} authorized identity: {self.known_names}")
+        try:
+            with open(self.encodings_path, "rb") as f:
+                data = pickle.load(f)
+                self.known_names = list(data.keys())
+                self.known_encodings = list(data.values())
+                print(f"Loaded {len(self.known_names)} authorized identity: {self.known_names}")
+        except Exception as e:
+            print(f"⚠️ Error loading known faces from pickle: {e}")
+            self.known_names = []
+            self.known_encodings = []
 
     def reload_config(self):
         print("🔄 Hot-reloading configurations from core...")
@@ -121,7 +126,7 @@ class FaceVerifier:
         on macOS — the unlock MUST happen on the main/NSApplication thread.
         """
         print("🟢 CAMERA WARMUP: Booting webcam session...")
-        self.cap = cv2.VideoCapture(self.video_source)
+        self.cap = cv2.VideoCapture(self.video_source, cv2.CAP_AVFOUNDATION)
         
         if not self.cap.isOpened():
             print("⚠️ Error: Could not open webcam.")
@@ -227,7 +232,9 @@ class FaceVerifier:
             # --- Preprocessing ---
             frame = cv2.flip(frame, 1)
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            small_frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
+            h_orig, w_orig = frame.shape[:2]
+            scale = 280.0 / w_orig
+            small_frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
             rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
 
             small_face_locations = face_recognition.face_locations(rgb_small_frame, model="hog")
@@ -239,7 +246,8 @@ class FaceVerifier:
                     time.sleep(0.01)
                 continue
 
-            face_locations = [(t*2, r*2, b*2, l*2) for (t, r, b, l) in small_face_locations]
+            inv_scale = 1.0 / scale
+            face_locations = [(int(t*inv_scale), int(r*inv_scale), int(b*inv_scale), int(l*inv_scale)) for (t, r, b, l) in small_face_locations]
             face_landmarks_list = face_recognition.face_landmarks(rgb_frame, face_locations)
             face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
 
