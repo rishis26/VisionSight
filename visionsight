@@ -242,6 +242,110 @@ def test_recognition():
     else:
         print(f"\n⚠️ Test Finished. Status: {result}")
 
+def uninstall_cli():
+    import shutil
+    import getpass
+    
+    print("=====================================")
+    print(" 🗑  VISIONSIGHT UNINSTALLER")
+    print("=====================================")
+    print("This will permanently erase:")
+    print("  • All registered biometric profiles")
+    print("  • All audit logs")
+    print("  • Your saved Mac password (keychain)")
+    print("  • All configuration settings")
+    print("  • The global 'visionsight' CLI command (/usr/local/bin)")
+    print("  • The 'vs' shell alias from ~/.zshrc")
+    print()
+    confirm = input("Type 'uninstall' to confirm, or press Enter to cancel: ").strip()
+    if confirm.lower() != "uninstall":
+        print("Uninstall cancelled.")
+        return
+
+    import system.paths as paths
+
+    # 1. Stop any running VisionSight process
+    pids = get_running_pids()
+    for pid in pids:
+        print(f"Stopping VisionSight process {pid}...")
+        try:
+            import signal as _signal
+            os.kill(pid, _signal.SIGTERM)
+            time.sleep(0.5)
+            try:
+                os.kill(pid, 0)
+                os.kill(pid, _signal.SIGKILL)
+            except OSError:
+                pass
+        except Exception as e:
+            print(f"  ⚠️  Could not stop PID {pid}: {e}")
+
+    # 2. Remove keychain entry
+    print("Removing keychain entry...")
+    result = subprocess.run(
+        ['security', 'delete-generic-password', '-a', os.getlogin(), '-s', 'VisionSightDaemon'],
+        capture_output=True
+    )
+    if result.returncode == 0:
+        print("  ✅ Keychain entry deleted.")
+    else:
+        print("  ℹ️  No keychain entry found (already removed).")
+
+    # 3. Wipe Application Support directory
+    app_data = os.path.expanduser('~/Library/Application Support/VisionSight')
+    if os.path.exists(app_data):
+        try:
+            shutil.rmtree(app_data)
+            print(f"  ✅ App data removed: {app_data}")
+        except Exception as e:
+            print(f"  ⚠️  Failed to remove app data: {e}")
+    else:
+        print("  ℹ️  No app data directory found.")
+
+    # 4. Remove global CLI symlink
+    cli_path = "/usr/local/bin/visionsight"
+    if os.path.exists(cli_path) or os.path.islink(cli_path):
+        print("Removing global CLI symlink...")
+        try:
+            os.remove(cli_path)
+            print(f"  ✅ CLI symlink removed: {cli_path}")
+        except PermissionError:
+            print("  🔑 Admin permission required...")
+            result = subprocess.run(["sudo", "rm", "-f", cli_path])
+            if result.returncode == 0:
+                print("  ✅ CLI symlink removed (via sudo).")
+            else:
+                print(f"  ⚠️  Could not remove — run manually: sudo rm {cli_path}")
+        except Exception as e:
+            print(f"  ⚠️  CLI symlink: {e}")
+    else:
+        print("  ℹ️  No global CLI symlink found.")
+
+    # 5. Remove 'vs' alias from ~/.zshrc
+    zshrc_path = os.path.expanduser("~/.zshrc")
+    alias_marker = "# VisionSight \u2014 short alias (added by visionsight install)"
+    alias_line = 'alias vs="visionsight"'
+    if os.path.exists(zshrc_path):
+        try:
+            with open(zshrc_path, "r") as f:
+                content = f.read()
+            cleaned = content.replace(f"\n{alias_marker}\n{alias_line}\n", "")
+            cleaned = cleaned.replace(f"\n{alias_line}\n", "\n")
+            if cleaned != content:
+                with open(zshrc_path, "w") as f:
+                    f.write(cleaned)
+                print("  ✅ Shell alias removed from ~/.zshrc")
+            else:
+                print("  ℹ️  No 'vs' alias found in ~/.zshrc")
+        except Exception as e:
+            print(f"  ⚠️  ~/.zshrc: {e}")
+
+    print()
+    print("🎉 VisionSight has been fully uninstalled.")
+    print("   The project folder itself was NOT deleted — remove it manually if needed.")
+    print(f"   Project folder: {BASE_DIR}")
+
+
 def install_global_cli():
     script_path = os.path.join(BASE_DIR, "visionsight")
     dest_dir = "/usr/local/bin"
@@ -344,6 +448,8 @@ def main():
         test_recognition()
     elif cmd == "install":
         install_global_cli()
+    elif cmd == "uninstall":
+        uninstall_cli()
     elif cmd in ("--help", "-h", "help"):
         print("VisionSight CLI Helper")
         print("Usage:")
@@ -360,7 +466,8 @@ def main():
         print("  visionsight config   List or set configurations")
         print("  visionsight logs     View recent logs")
         print("  visionsight test     Perform a one-time face recognition test")
-        print("  visionsight install  Install globally: adds 'visionsight' to PATH + 'vs' alias to ~/.zshrc")
+        print("  visionsight install    Install globally: adds 'visionsight' to PATH + 'vs' alias to ~/.zshrc")
+        print("  visionsight uninstall  Remove all data, keychain entry, CLI symlink, and shell alias")
         
         print("\nGlobal Shell Integration:")
         print("  Run 'visionsight install' once to set everything up for your user:")

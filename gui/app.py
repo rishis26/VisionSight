@@ -505,6 +505,7 @@ class VisionSightGUI(QMainWindow):
         if self.isVisible() and self.content_stack.currentIndex() in [0, 1]:
             self.start_camera()
 
+
     def refresh_dashboard_status(self):
         running = self.is_daemon_running()
         if not running:
@@ -1120,6 +1121,135 @@ class VisionSightGUI(QMainWindow):
                 
             self.log_table.setItem(row, 1, status_item)
             self.log_table.setItem(row, 2, QTableWidgetItem(log[2]))
+
+    # ── Reset / Uninstall ─────────────────────────────────────────────────────
+
+    def _wipe_app_data(self) -> list[str]:
+        """Remove all VisionSight user data. Returns a list of result messages."""
+        import shutil
+        msgs = []
+
+        # 1. Stop daemon & camera cleanly
+        self.stop_daemon_thread()
+        self.stop_camera()
+
+        # 2. Remove keychain entry
+        try:
+            subprocess.run(
+                ['security', 'delete-generic-password', '-a', os.getlogin(), '-s', 'VisionSightDaemon'],
+                capture_output=True
+            )
+            msgs.append("✅ Keychain entry deleted.")
+        except Exception as e:
+            msgs.append(f"⚠️ Keychain: {e}")
+
+        # 3. Wipe Application Support directory
+        import system.paths as paths
+        app_data = paths.get_app_data_dir()
+        if os.path.exists(app_data):
+            try:
+                shutil.rmtree(app_data)
+                msgs.append(f"✅ App data removed: {app_data}")
+            except Exception as e:
+                msgs.append(f"⚠️ App data: {e}")
+        else:
+            msgs.append("ℹ️ No app data directory found.")
+
+        return msgs
+
+    def reset_all_data(self):
+        """Erase all user data and return to onboarding, keeping the CLI installed."""
+        reply = QMessageBox.warning(
+            self,
+            "⚠  RESET ALL DATA",
+            "This will permanently delete:\n\n"
+            "  • All registered biometric profiles\n"
+            "  • All audit logs\n"
+            "  • Your saved Mac password (keychain)\n"
+            "  • All configuration settings\n\n"
+            "VisionSight will restart into the initial setup wizard.\n\n"
+            "This action CANNOT be undone. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        msgs = self._wipe_app_data()
+        summary = "\n".join(msgs)
+        QMessageBox.information(self, "RESET COMPLETE", f"All data erased.\n\n{summary}\n\nRestarting setup wizard...")
+
+        # Restart the GUI process so onboarding triggers cleanly
+        import sys
+        python = sys.executable
+        os.execv(python, [python] + sys.argv)
+
+    def uninstall_app(self):
+        """Erase all data, remove the global CLI symlink + shell alias, then quit."""
+        reply = QMessageBox.warning(
+            self,
+            "⚠  UNINSTALL VISIONSIGHT",
+            "This will COMPLETELY remove VisionSight:\n\n"
+            "  • All registered biometric profiles\n"
+            "  • All audit logs\n"
+            "  • Your saved Mac password (keychain)\n"
+            "  • All configuration settings\n"
+            "  • Global 'visionsight' CLI command (/usr/local/bin)\n"
+            "  • The 'vs' shell alias from ~/.zshrc\n\n"
+            "The application will quit after uninstalling.\n\n"
+            "This action CANNOT be undone. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        msgs = self._wipe_app_data()
+
+        # Remove global CLI symlink
+        cli_path = "/usr/local/bin/visionsight"
+        if os.path.exists(cli_path) or os.path.islink(cli_path):
+            try:
+                os.remove(cli_path)
+                msgs.append("✅ CLI symlink removed: /usr/local/bin/visionsight")
+            except PermissionError:
+                result = subprocess.run(["sudo", "rm", "-f", cli_path], capture_output=True)
+                if result.returncode == 0:
+                    msgs.append("✅ CLI symlink removed (via sudo).")
+                else:
+                    msgs.append("⚠️ Could not remove CLI symlink — run: sudo rm /usr/local/bin/visionsight")
+            except Exception as e:
+                msgs.append(f"⚠️ CLI symlink: {e}")
+        else:
+            msgs.append("ℹ️ No global CLI symlink found.")
+
+        # Remove alias from ~/.zshrc
+        zshrc_path = os.path.expanduser("~/.zshrc")
+        alias_marker = "# VisionSight — short alias (added by visionsight install)"
+        alias_line = 'alias vs="visionsight"'
+        if os.path.exists(zshrc_path):
+            try:
+                with open(zshrc_path, "r") as f:
+                    content = f.read()
+                # Remove marker comment + alias line block
+                cleaned = content.replace(f"\n{alias_marker}\n{alias_line}\n", "")
+                # Fallback: remove just the alias line in case it was added without the comment
+                cleaned = cleaned.replace(f"\n{alias_line}\n", "\n")
+                if cleaned != content:
+                    with open(zshrc_path, "w") as f:
+                        f.write(cleaned)
+                    msgs.append("✅ Shell alias removed from ~/.zshrc")
+                else:
+                    msgs.append("ℹ️ No 'vs' alias found in ~/.zshrc")
+            except Exception as e:
+                msgs.append(f"⚠️ ~/.zshrc: {e}")
+
+        summary = "\n".join(msgs)
+        QMessageBox.information(
+            self, "UNINSTALL COMPLETE",
+            f"VisionSight has been uninstalled.\n\n{summary}\n\nThe application will now quit."
+        )
+        self.quit_app()
 
     def clear_logs(self):
         reply = QMessageBox.question(self, "FLUSH SYSTEM", "ERASE ALL AUDIT LOGS?",
