@@ -127,6 +127,22 @@ class IdentitiesPage(QWidget):
         apply_shadow(vid_frame, 0, 6, 6, 255, "#000000")
         
         left_layout.addWidget(vid_frame, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Live face-detection status badge
+        self.face_status_label = QLabel("👁  CAMERA STARTING...")
+        self.face_status_label.setFont(QFont(".AppleSystemUIFont", 12, QFont.Weight.Bold))
+        self.face_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.face_status_label.setFixedHeight(36)
+        self.face_status_label.setStyleSheet("""
+            QLabel {
+                background-color: #333333;
+                color: #FFFFFF;
+                border-radius: 8px;
+                padding: 4px 14px;
+                letter-spacing: 1px;
+            }
+        """)
+        left_layout.addWidget(self.face_status_label, alignment=Qt.AlignmentFlag.AlignCenter)
         
         self.name_input = QLineEdit()
         self.name_input.setPlaceholderText("IDENTITY NAME")
@@ -584,6 +600,26 @@ class OnboardingPage(QWidget):
         vid_row.addWidget(self.wiz_video)
         vid_row.addStretch()
         w2_l.addLayout(vid_row)
+
+        # Live face-detection status badge for onboarding
+        self.wiz_face_status_label = QLabel("👁  CAMERA STARTING...")
+        self.wiz_face_status_label.setFont(QFont(".AppleSystemUIFont", 12, QFont.Weight.Bold))
+        self.wiz_face_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.wiz_face_status_label.setFixedHeight(36)
+        self.wiz_face_status_label.setStyleSheet("""
+            QLabel {
+                background-color: #333333;
+                color: #FFFFFF;
+                border-radius: 8px;
+                padding: 4px 14px;
+                letter-spacing: 1px;
+            }
+        """)
+        wiz_status_row = QHBoxLayout()
+        wiz_status_row.addStretch()
+        wiz_status_row.addWidget(self.wiz_face_status_label)
+        wiz_status_row.addStretch()
+        w2_l.addLayout(wiz_status_row)
         
         self.wiz_name = QLineEdit()
         self.wiz_name.setPlaceholderText("ENTER YOUR NAME (e.g. USERNAME)")
