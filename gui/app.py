@@ -1065,9 +1065,11 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"⚠️ Could not set activation policy: {e}")
 
+    import system.paths as _log_paths
+    _log_file_path = _log_paths.get_log_path()
+    os.makedirs(os.path.dirname(_log_file_path), exist_ok=True)
+
     if getattr(sys, 'frozen', False):
-        import system.paths as _log_paths
-        _log_file_path = _log_paths.get_log_path()
         _log_file = open(_log_file_path, 'a', buffering=1)
         sys.stdout = _log_file
         sys.stderr = _log_file
@@ -1095,6 +1097,24 @@ if __name__ == "__main__":
             print(f"⚠️ [FROZEN] AVFoundation probe failed: {e}")
 
         print(f"📂 [FROZEN] _MEIPASS = {sys._MEIPASS}")
+    else:
+        # Tee stdout/stderr to both terminal and daemon.log in development/CLI mode
+        class TeeLogger:
+            def __init__(self, filepath, stream):
+                self.stream = stream
+                self.log = open(filepath, 'a', buffering=1)
+            def write(self, message):
+                self.stream.write(message)
+                self.log.write(message)
+            def flush(self):
+                self.stream.flush()
+                self.log.flush()
+        
+        sys.stdout = TeeLogger(_log_file_path, sys.stdout)
+        sys.stderr = TeeLogger(_log_file_path, sys.stderr)
+        print("=" * 50)
+        print("VisionSight dev app started (Tee logging active)")
+        print("=" * 50)
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
