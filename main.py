@@ -190,11 +190,13 @@ class DaemonCore:
 
         print("✅ Daemon Ready. Listening for OS broadcasts (0% CPU idle)...")
 
-        # Drive the run-loop in 0.5s slices so _stop_event is checked regularly.
-        # This replaces the blocking AppHelper.runEventLoop() call.
+        # Drive the run-loop in slices, with a time.sleep() to prevent a busy loop
+        # on background threads (which otherwise return immediately from CFRunLoopRunInMode
+        # when no sources/timers are registered on that thread's run-loop, consuming 100% CPU).
         try:
             while not self._stop_event.is_set():
-                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.5, False)
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, False)
+                time.sleep(0.1)
         except Exception as e:
             print(f"⚠️ DaemonCore run-loop exception: {e}")
         finally:
