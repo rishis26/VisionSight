@@ -247,7 +247,9 @@ def install_global_cli():
     dest_dir = "/usr/local/bin"
     dest_path = os.path.join(dest_dir, "visionsight")
     
+    # ── Step 1: Global symlink ────────────────────────────────────────────────
     print(f"Installing visionsight CLI to {dest_path}...")
+    symlink_ok = False
     try:
         if not os.path.exists(dest_dir):
             print(f"Directory {dest_dir} does not exist. Creating it...")
@@ -257,12 +259,40 @@ def install_global_cli():
             os.remove(dest_path)
             
         os.symlink(script_path, dest_path)
-        print("\n✅ Success: visionsight is now installed globally!")
-        print("You can run it from any directory by typing 'visionsight'!")
+        print("✅ Symlink created: visionsight is now available as a global command.")
+        symlink_ok = True
     except Exception as e:
         print(f"\n⚠️ Error installing symlink: {e}")
         print("Please try running with sudo or manually create the symlink:")
         print(f"  sudo ln -sf {script_path} {dest_path}")
+
+    # ── Step 2: Write `alias vs="visionsight"` to ~/.zshrc ───────────────────
+    # Because the symlink lands in /usr/local/bin (which is on $PATH),
+    # the alias needs NO hardcoded path — it works for anyone on any machine.
+    alias_line = 'alias vs="visionsight"'
+    zshrc_path = os.path.expanduser("~/.zshrc")
+    try:
+        # Read existing content (create file if missing)
+        existing = ""
+        if os.path.exists(zshrc_path):
+            with open(zshrc_path, "r") as f:
+                existing = f.read()
+
+        if alias_line in existing:
+            print(f"✅ Alias already present in {zshrc_path} — skipping.")
+        else:
+            with open(zshrc_path, "a") as f:
+                f.write(f"\n# VisionSight — short alias (added by visionsight install)\n{alias_line}\n")
+            print(f"✅ Alias added to {zshrc_path}.")
+            print("   Run 'source ~/.zshrc' (or open a new terminal) to activate 'vs'.")
+    except Exception as e:
+        print(f"⚠️ Could not write alias to {zshrc_path}: {e}")
+        print(f"  Add this line manually:\n    {alias_line}")
+
+    if symlink_ok:
+        print("\n🎉 Installation complete!")
+        print("  • Type 'visionsight' from anywhere to launch VisionSight.")
+        print("  • Type 'vs' (after sourcing ~/.zshrc) as a short alias.")
 
 def main():
     if len(sys.argv) < 2:
@@ -320,12 +350,12 @@ def main():
         print("  visionsight config   List or set configurations")
         print("  visionsight logs     View recent logs")
         print("  visionsight test     Perform a one-time face recognition test")
-        print("  visionsight install  Install the 'visionsight' CLI tool globally")
+        print("  visionsight install  Install globally: adds 'visionsight' to PATH + 'vs' alias to ~/.zshrc")
         
-        script_path = os.path.join(BASE_DIR, "visionsight")
         print("\nGlobal Shell Integration:")
-        print("  To call 'visionsight' from anywhere as 'vs', add this alias to your ~/.zshrc:")
-        print(f"    alias vs=\"{script_path}\"")
+        print("  Run 'visionsight install' once to set everything up for your user:")
+        print("    • Symlinks visionsight → /usr/local/bin  (works from any directory)")
+        print("    • Adds 'alias vs=\"visionsight\"' to ~/.zshrc  (works for any user on any machine)")
         print("  Then reload your shell:")
         print("    source ~/.zshrc")
     else:
