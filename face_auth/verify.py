@@ -133,19 +133,26 @@ class FaceVerifier:
             return "failed"
             
         # Apply Configuration for Camera Setup
+        # Bypassing properties when they match default settings prevents costly AVFoundation stream renegotiations.
         if self.RESOLUTION_SETTING == "1280x720":
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        else:
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        elif self.RESOLUTION_SETTING != "640x480":
+            try:
+                w, h = map(int, self.RESOLUTION_SETTING.split('x'))
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+            except Exception:
+                pass
             
         if self.FPS_SETTING == "Low":
-            self.cap.set(cv2.CAP_PROP_FPS, 5)
-        elif self.FPS_SETTING == "High":
-            self.cap.set(cv2.CAP_PROP_FPS, 15)
-        else:
             self.cap.set(cv2.CAP_PROP_FPS, 10)
+        elif self.FPS_SETTING == "High":
+            # Native high speed (usually 30 FPS), skip throttling to avoid delays
+            pass
+        else:
+            # Medium (Default): run at native high frame rate (30 FPS) for faster exposure adjustment
+            pass
 
         print("👁️‍🗨️ SCANNING: Waiting for authorized face... (Press Esc to stop)")
 
