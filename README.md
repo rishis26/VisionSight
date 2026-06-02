@@ -50,6 +50,7 @@ That's it. The onboarding wizard handles permissions, keychain setup, and face r
 ### Setting up the environment
 
 Clone the repo and set up a Python virtual environment inside the project folder:
+
 ```bash
 git clone https://github.com/rishis26/VisionSight.git
 cd VisionSight
@@ -77,9 +78,11 @@ VisionSight needs two permissions — macOS will prompt for these on first launc
 VisionSight needs to know your macOS login password to unlock the screen. It asks for it **once**, then stores it encrypted in your **macOS Hardware Keychain** — the same vault macOS uses for Wi-Fi passwords and Apple ID credentials. It is never written to a file on disk.
 
 Run the setup wizard:
+
 ```bash
 vs setup
 ```
+
 Or skip this — the onboarding screen inside the GUI will walk you through it automatically on first launch.
 
 ### Registering your face
@@ -87,15 +90,19 @@ Or skip this — the onboarding screen inside the GUI will walk you through it a
 VisionSight must learn what you look like before it can recognize you.
 
 **Via the GUI (recommended for first time):**
+
 ```bash
 vs gui
 ```
+
 Go to the **Identities** tab → type your name → look at the camera → click **REGISTER ID**. A live badge below the camera shows whether your face is being detected in real time.
 
 **Via terminal (no window needed):**
+
 ```bash
 vs register YourName
 ```
+
 Press Enter when prompted. VisionSight captures a frame in the background, detects your face, and saves the encoding — no GUI or popup required.
 
 You can register **multiple people**. Everyone registered is authorized to unlock the machine.
@@ -103,12 +110,14 @@ You can register **multiple people**. Everyone registered is authorized to unloc
 ### Installing the global CLI
 
 To use `vs` or `visionsight` from any folder in your terminal:
+
 ```bash
 ./visionsight install
 source ~/.zshrc
 ```
 
 This does two things:
+
 - Creates a symlink at `/usr/local/bin/visionsight` (you'll be prompted for your password once via `sudo`)
 - Adds `alias vs="visionsight"` to your `~/.zshrc` — no hardcoded paths, works on any machine
 
@@ -141,7 +150,7 @@ Frames are downscaled to 280px width and run through a HOG face detector (4–8m
 
 A liveness check runs in parallel — computing Eye Aspect Ratio (EAR) from 6 facial landmarks per eye across a rolling frame buffer. Eyes must be open above a threshold to pass, which prevents unlocking via a photograph or while you're asleep.
 
-On a successful match, VisionSight retrieves your password from the Keychain and injects it as keyboard events via `Quartz.CGEventPost(kCGHIDEventTap)` — the same low-level HID event tap used by macOS accessibility tools.
+On a successful match, VisionSight securely wakes the screen using the Shift key (preventing accidental password space injections), retrieves your password from the Keychain, and injects it as keyboard events via `Quartz.CGEventPost(kCGHIDEventTap)` — the same low-level HID event tap used by macOS accessibility tools.
 
 ### Architecture
 
@@ -188,6 +197,7 @@ VisionSight/
 ```
 
 App data (outside the project, never committed):
+
 ```
 ~/Library/Application Support/VisionSight/
 ├── .env                 ← Active configuration
@@ -213,51 +223,53 @@ App data (outside the project, never committed):
 
 **Full CLI** — Every function accessible from the terminal. No GUI required.
 
-**Neo-Brutalist Dashboard** — Bold PyQt6 control panel with Overview, Identities, Config, Security, and Logs pages.
+**Dynamic Island Overlay** — Sleek, native-feeling biometric unlock notification that glides in from the top of your screen.
+
+**Clean Dark Mode Dashboard** — Sleek Apple-native PyQt6 control panel with Overview, Identities, Config, Security, and Logs pages.
 
 ### CLI Reference
 
-| Command | Description |
-|---|---|
-| `vs` / `vs gui` | Open the dashboard (raises existing window if running) |
-| `vs start` | Start protection in the system tray |
-| `vs stop` | Stop the daemon |
-| `vs status` | Show running state and PID |
-| `vs register <name>` | Register a face (terminal mode, no GUI) |
-| `vs remove <name>` | Remove a registered identity |
-| `vs list` | List all registered identities |
-| `vs config list` | Show all config values |
-| `vs config set <key> <val>` | Update a config value |
-| `vs logs` | Show last 20 lines of daemon log |
-| `vs test` | One-time face recognition test |
-| `vs setup` | Re-run the keychain password wizard |
-| `vs install` | Install globally + add `vs` alias to `~/.zshrc` |
+| Command                     | Description                                            |
+| --------------------------- | ------------------------------------------------------ |
+| `vs` / `vs gui`             | Open the dashboard (raises existing window if running) |
+| `vs start`                  | Start protection in the system tray                    |
+| `vs stop`                   | Stop the daemon                                        |
+| `vs status`                 | Show running state and PID                             |
+| `vs register <name>`        | Register a face (terminal mode, no GUI)                |
+| `vs remove <name>`          | Remove a registered identity                           |
+| `vs list`                   | List all registered identities                         |
+| `vs config list`            | Show all config values                                 |
+| `vs config set <key> <val>` | Update a config value                                  |
+| `vs logs`                   | Show last 20 lines of daemon log                       |
+| `vs test`                   | One-time face recognition test                         |
+| `vs setup`                  | Re-run the keychain password wizard                    |
+| `vs install`                | Install globally + add `vs` alias to `~/.zshrc`        |
 
 ### Configuration
 
 Stored in `~/Library/Application Support/VisionSight/.env`. Edit via GUI Config page or `vs config set`.
 
-| Key | Default | Description |
-|---|---|---|
-| `VISIONSIGHT_CAMERA` | `0` | Camera index (0 = built-in, 1 = first external) |
-| `VISIONSIGHT_TOLERANCE` | `0.55` | Match threshold — lower is stricter (range: 0.4–0.7) |
-| `VISIONSIGHT_AUTO_UNLOCK` | `true` | Auto-type password after a face match |
-| `VISIONSIGHT_COOLDOWN` | `10` | Seconds between scan attempts |
-| `VISIONSIGHT_FPS` | `Medium` | Camera FPS hint (Low / Medium / High) |
-| `VISIONSIGHT_RESOLUTION` | `640x480` | Capture resolution |
+| Key                       | Default   | Description                                          |
+| ------------------------- | --------- | ---------------------------------------------------- |
+| `VISIONSIGHT_CAMERA`      | `0`       | Camera index (0 = built-in, 1 = first external)      |
+| `VISIONSIGHT_TOLERANCE`   | `0.55`    | Match threshold — lower is stricter (range: 0.4–0.7) |
+| `VISIONSIGHT_AUTO_UNLOCK` | `true`    | Auto-type password after a face match                |
+| `VISIONSIGHT_COOLDOWN`    | `10`      | Seconds between scan attempts                        |
+| `VISIONSIGHT_FPS`         | `Medium`  | Camera FPS hint (Low / Medium / High)                |
+| `VISIONSIGHT_RESOLUTION`  | `640x480` | Capture resolution                                   |
 
 ### Tech Stack
 
-| | Technology |
-|---|---|
-| GUI | PyQt6 6.10 |
-| Camera | OpenCV 4.9 with `cv2.CAP_AVFOUNDATION` |
-| Face Recognition | `face_recognition` 1.3 (dlib HOG + ResNet embeddings) |
-| macOS APIs | PyObjC — Foundation, AppKit, Quartz, CoreFoundation |
-| IPC | `NSDistributedNotificationCenter` |
-| Lock Detection | `Quartz.CGSessionCopyCurrentDictionary()` |
-| Keyboard Injection | `Quartz.CGEventPost(kCGHIDEventTap)` |
-| Password Storage | macOS `security` CLI + Hardware Keychain |
+|                    | Technology                                            |
+| ------------------ | ----------------------------------------------------- |
+| GUI                | PyQt6 6.10                                            |
+| Camera             | OpenCV 4.9 with `cv2.CAP_AVFOUNDATION`                |
+| Face Recognition   | `face_recognition` 1.3 (dlib HOG + ResNet embeddings) |
+| macOS APIs         | PyObjC — Foundation, AppKit, Quartz, CoreFoundation   |
+| IPC                | `NSDistributedNotificationCenter`                     |
+| Lock Detection     | `Quartz.CGSessionCopyCurrentDictionary()`             |
+| Keyboard Injection | `Quartz.CGEventPost(kCGHIDEventTap)`                  |
+| Password Storage   | macOS `security` CLI + Hardware Keychain              |
 
 ---
 
