@@ -16,7 +16,7 @@ from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QIcon, QAction, QKeySequ
 from dotenv import load_dotenv, set_key
 
 from main import DaemonCore
-from gui.widgets import apply_neumorphic_shadow, LiquidFrame, LiquidInput, ToggleButton, StyledButton, NavButton
+from gui.widgets import apply_apple_shadow, GlassCard, ToggleButton, StyledButton, NavButton
 from gui.threads import CameraThread, DaemonScanThread
 from gui.pages import (DashboardPage, IdentitiesPage, SettingsPage, 
                        SecurityPage, LogsPage, OnboardingPage)
@@ -24,7 +24,7 @@ from gui.pages import (DashboardPage, IdentitiesPage, SettingsPage,
 class VisionSightGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("VisionSight - Neo Control Panel")
+        self.setWindowTitle("VisionSight")
         self.setMinimumSize(1100, 720)
 
         import system.paths as paths
@@ -59,7 +59,6 @@ class VisionSightGUI(QMainWindow):
         self.shortcut_fullscreen.activated.connect(self.toggle_fullscreen)
 
         self.init_ui()
-        self.init_tray()
         
         if self.is_onboarding_needed():
             self.sidebar.hide()
@@ -87,7 +86,7 @@ class VisionSightGUI(QMainWindow):
 
     def init_ui(self):
         main_widget = QFrame()
-        main_widget.setStyleSheet("background-color: #E0E5EC;") # Liquid Morphism Base
+        main_widget.setStyleSheet("background-color: #121212;")
         main_layout = QHBoxLayout(main_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -333,8 +332,8 @@ class VisionSightGUI(QMainWindow):
         sidebar.setFixedWidth(280)
         sidebar.setStyleSheet("""
             .QFrame {
-                background-color: #E0E5EC;
-                border-right: 2px solid #FFFFFF;
+                background-color: #1C1C1E;
+                border-right: 1px solid #2C2C2E;
             }
         """)
         layout = QVBoxLayout(sidebar)
@@ -355,7 +354,7 @@ class VisionSightGUI(QMainWindow):
         title_text_layout = QVBoxLayout()
         title = QLabel("VisionSight")
         title.setFont(QFont(".AppleSystemUIFont", 22, QFont.Weight.Bold))
-        title.setStyleSheet("color: #000000; letter-spacing: -0.5px;")
+        title.setStyleSheet("color: #FFFFFF; letter-spacing: -0.5px;")
         
         title_text_layout.addWidget(title)
         title_text_layout.setSpacing(0)
@@ -385,28 +384,28 @@ class VisionSightGUI(QMainWindow):
             QPushButton {
                 text-align: center;
                 padding: 10px 16px;
-                background: #FFFFFF;
-                color: #FF3B30;
-                border: 1px solid #E5E5EA;
+                background: #1C1C1E;
+                color: #0A84FF;
+                border: 1px solid #2C2C2E;
                 border-radius: 8px;
                 margin-bottom: 10px;
             }
-            QPushButton:hover { background: #FF3B30; color: #FFFFFF; border: none; }
+            QPushButton:hover { background-color: rgba(255, 255, 255, 0.1); color: #FFFFFF; }
             QPushButton:pressed { opacity: 0.8; }
         """)
         btn_quit.clicked.connect(self.quit_app)
-        apply_neumorphic_shadow(btn_quit, 10, 2)
+        
         layout.addWidget(btn_quit)
 
         footer = QLabel("Version 5.0 • Main Terminal")
         footer.setFont(QFont(".AppleSystemUIFont", 11, QFont.Weight.Medium))
-        footer.setStyleSheet("color: #8E8E93; padding: 10px; background: transparent;")
+        footer.setStyleSheet("color: #39393D; padding: 10px; background: transparent;")
         footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(footer)
 
         credit = QLabel('A project by <a href="https://github.com/rishis26" style="color:#007AFF; text-decoration:none;">Rishi Shah</a>')
         credit.setFont(QFont(".AppleSystemUIFont", 11, QFont.Weight.Medium))
-        credit.setStyleSheet("QLabel { color: #8E8E93; padding: 4px; text-align: center; }")
+        credit.setStyleSheet("QLabel { color: #39393D; padding: 4px; text-align: center; }")
         credit.setAlignment(Qt.AlignmentFlag.AlignCenter)
         credit.setOpenExternalLinks(True)
         credit.setTextFormat(Qt.TextFormat.RichText)
@@ -414,8 +413,8 @@ class VisionSightGUI(QMainWindow):
 
         return sidebar
 
-    def card_frame(self, bg_color="#E0E5EC"):
-        return LiquidFrame(radius=24)
+    def card_frame(self, bg_color="#1C1C1E"):
+        return GlassCard(radius=16)
 
     def switch_to_page(self, index):
         for i, btn in enumerate(self.nav_btns):
@@ -534,29 +533,25 @@ class VisionSightGUI(QMainWindow):
                 if self.isVisible() and self.content_stack.currentIndex() in [0, 1]:
                     self.start_camera()
         
-        self.update_tray_daemon_status()
 
         if os.path.exists(self.log_path):
             with open(self.log_path, 'r') as f:
                 content = f.read()
-            if "Identity Verified" in content and "Verification Failed" in content:
-                last_fail = content.rfind("Verification Failed")
-                last_succ = content.rfind("Identity Verified")
-                if last_succ > last_fail:
-                    self.auth_result.setText("VERIFIED")
-                    self.auth_result.setStyleSheet("color: #000000; background: #FFD500; padding: 0 5px;")
-                else:
-                    self.auth_result.setText("REJECTED")
-                    self.auth_result.setStyleSheet("color: #FFFFFF; background: #FF5555; padding: 0 5px;")
+            if "Daemon started" in content:
+                self.auth_result.setText("ACTIVE")
+                self.auth_result.setStyleSheet("color: #FFFFFF; background: #32D74B; border-radius: 4px; padding: 2px 8px;")
+            elif "Permission Denied" in content:
+                self.auth_result.setText("DENIED")
+                self.auth_result.setStyleSheet("color: #FFFFFF; background: #FF3B30; border-radius: 4px; padding: 2px 8px;")
             elif "Identity Verified" in content:
                 self.auth_result.setText("VERIFIED")
-                self.auth_result.setStyleSheet("color: #000000; background: #FFD500; padding: 0 5px;")
+                self.auth_result.setStyleSheet("color: #FFFFFF; background: #32D74B; border-radius: 4px; padding: 2px 8px;")
             elif "Verification Failed" in content:
                 self.auth_result.setText("REJECTED")
-                self.auth_result.setStyleSheet("color: #FFFFFF; background: #FF5555; padding: 0 5px;")
+                self.auth_result.setStyleSheet("color: #FFFFFF; background: #FF3B30; border-radius: 4px; padding: 2px 8px;")
             else:
                 self.auth_result.setText("NO DATA")
-                self.auth_result.setStyleSheet("color: #000000; background: transparent;")
+                self.auth_result.setStyleSheet("color: #8E8E93; background: transparent;")
                 self.auth_time.setText("--")
                 return
 
@@ -788,57 +783,6 @@ class VisionSightGUI(QMainWindow):
                 if self._face_detect_counter % 10 == 0:
                     self._update_face_status_badge(raw_frame, self.wiz_face_status_label)
 
-    def init_tray(self):
-        self.tray_icon = QSystemTrayIcon(self)
-        
-        if os.path.exists(self.icon_path):
-            self.tray_icon.setIcon(QIcon(self.icon_path))
-        else:
-            self.tray_icon.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
-            
-        self.tray_menu = QMenu()
-        
-        self.tray_status_action = QAction("Status: Checking...", self)
-        self.tray_status_action.setEnabled(False)
-        self.tray_menu.addAction(self.tray_status_action)
-        
-        self.tray_menu.addSeparator()
-        
-        open_action = QAction("Open Dashboard", self)
-        open_action.triggered.connect(self.show_and_raise)
-        self.tray_menu.addAction(open_action)
-        
-        settings_action = QAction("Settings", self)
-        settings_action.triggered.connect(self.open_settings_page)
-        self.tray_menu.addAction(settings_action)
-        
-        self.tray_menu.addSeparator()
-        
-        self.start_action = QAction("Start Protection", self)
-        self.start_action.triggered.connect(self.start_daemon_thread)
-        self.tray_menu.addAction(self.start_action)
-        
-        self.stop_action = QAction("Stop Protection", self)
-        self.stop_action.triggered.connect(self.stop_daemon_thread)
-        self.tray_menu.addAction(self.stop_action)
-        
-        self.tray_menu.addSeparator()
-
-        self.logs_menu = QMenu("Recent Logs", self)
-        self.tray_menu.addMenu(self.logs_menu)
-        self.refresh_tray_logs_submenu()
-        
-        self.tray_menu.addSeparator()
-        
-        quit_action = QAction("Quit VisionSight", self)
-        quit_action.triggered.connect(self.quit_app)
-        self.tray_menu.addAction(quit_action)
-        
-        self.tray_icon.setContextMenu(self.tray_menu)
-        self.tray_icon.activated.connect(self.on_tray_activated)
-        
-        self.tray_icon.show()
-
     def toggle_fullscreen(self):
         if self.isFullScreen():
             self.showNormal()
@@ -876,80 +820,6 @@ class VisionSightGUI(QMainWindow):
         self.activateWindow()
         self.raise_()
         self.switch_to_page(2)
-
-    def on_tray_activated(self, reason):
-        if reason in (QSystemTrayIcon.ActivationReason.DoubleClick, QSystemTrayIcon.ActivationReason.Trigger):
-            if self.isVisible():
-                self.hide()
-                self.stop_camera()
-            else:
-                self.show_and_raise()
-
-    def refresh_tray_logs_submenu(self):
-        self.logs_menu.clear()
-        if not os.path.exists(self.log_path):
-            self.logs_menu.addAction("No log file found.").setEnabled(False)
-            return
-            
-        try:
-            with open(self.log_path, 'r') as f:
-                lines = f.readlines()
-            
-            recent = []
-            for line in reversed(lines):
-                line = line.strip()
-                if line:
-                    clean_line = re.sub(r'[\U00010000-\U0010ffff]', '', line).strip()
-                    for rep in ["✅", "❌", "🛑", "⚠️", "🔒", "🟢", "👁️", "💤", "☀️", "🔄", "🔓"]:
-                        clean_line = clean_line.replace(rep, "")
-                    clean_line = clean_line.strip()
-                    if clean_line:
-                        recent.append(clean_line)
-                        if len(recent) >= 5:
-                            break
-            
-            if not recent:
-                self.logs_menu.addAction("No recent events.").setEnabled(False)
-            else:
-                for log in recent:
-                    action = QAction(log, self)
-                    action.setEnabled(False)
-                    self.logs_menu.addAction(action)
-        except Exception as e:
-            self.logs_menu.addAction(f"Error reading logs: {str(e)}").setEnabled(False)
-
-    def update_tray_daemon_status(self):
-        if not hasattr(self, 'tray_icon') or not self.tray_icon.isVisible():
-            return
-            
-        running = self.is_daemon_running()
-        if not running:
-            self.tray_status_action.setText("Status: OFFLINE")
-            self.start_action.setEnabled(True)
-            self.stop_action.setEnabled(False)
-        else:
-            state = "IDLE"
-            if os.path.exists(self.log_path):
-                with open(self.log_path, 'r') as f:
-                    lines = f.readlines()
-                last_meaningful = ""
-                for line in reversed(lines):
-                    if line.strip():
-                        last_meaningful = line
-                        break
-                
-                if "Lock Detected" in last_meaningful or "System is still locked" in last_meaningful:
-                    state = "LOCKED"
-                elif "SCANNING" in last_meaningful or "Resuming camera scan" in last_meaningful:
-                    state = "ACTIVE"
-                elif "Aborting" in last_meaningful or "cancelled" in last_meaningful or "cooldown" in last_meaningful.lower():
-                    state = "COOLDOWN"
-            
-            self.tray_status_action.setText(f"Status: {state}")
-            self.start_action.setEnabled(False)
-            self.stop_action.setEnabled(True)
-            
-        self.refresh_tray_logs_submenu()
 
     def closeEvent(self, event):
         if not hasattr(self, 'tray_icon') or not self.tray_icon.isVisible():
@@ -1019,12 +889,12 @@ class VisionSightGUI(QMainWindow):
         
         text_layout = QVBoxLayout()
         t = QLabel(title)
-        t.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Black))
-        t.setStyleSheet("color: #000000;")
+        t.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Bold))
+        t.setStyleSheet("color: #FFFFFF;")
         
         d = QLabel(desc)
-        d.setFont(QFont(".AppleSystemUIFont", 12, QFont.Weight.Bold))
-        d.setStyleSheet("color: #4B5563;")
+        d.setFont(QFont(".AppleSystemUIFont", 12, QFont.Weight.Medium))
+        d.setStyleSheet("color: #8E8E93;")
         
         text_layout.addWidget(t)
         text_layout.addWidget(d)
