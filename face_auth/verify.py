@@ -193,10 +193,7 @@ class FaceVerifier:
 
         while True:
             current_time = time.time()
-            if current_time - start_time > self.ACTIVATION_WINDOW:
-                print("🛑 Scan aborted: Activation window expired.")
-                self._stop_requested = True
-                
+            
             # Check physical hardware display state strictly every 1.0s to catch idle sleep
             if current_time - last_display_check >= 1.0:
                 if not system_controller._is_display_on():
