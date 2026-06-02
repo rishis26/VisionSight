@@ -249,9 +249,9 @@ class SystemController:
         source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStatePrivate)
         tap = Quartz.kCGHIDEventTap
 
-        # Spacebar wake
+        # Shift wake
         for down in (True, False):
-            ev = Quartz.CGEventCreateKeyboardEvent(source, 49, down)
+            ev = Quartz.CGEventCreateKeyboardEvent(source, 56, down)
             Quartz.CGEventPost(tap, ev)
 
         time.sleep(0.8)
