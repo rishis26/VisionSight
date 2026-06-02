@@ -143,9 +143,8 @@ class SystemController:
     # ── Post-unlock system effects ────────────────────────────────────────────
 
     def _fire_system_unlock_effects(self, user_name: str):
-        """Play a chime and show a Dynamic Island style overlay on the homescreen."""
+        """Play a chime on the homescreen."""
         import threading
-        import sys
 
         # Play unlock sound in background (non-blocking)
         def _play_sound():
@@ -162,17 +161,6 @@ class SystemController:
                     pass
 
         threading.Thread(target=_play_sound, daemon=True).start()
-
-        # Show borderless pill overlay at the top of the screen
-        try:
-            overlay_script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'gui', 'overlay.py')
-            subprocess.Popen(
-                [sys.executable, overlay_script, user_name],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-        except Exception as e:
-            print(f"⚠️ Overlay launch failed: {e}")
 
     # ── Bundled mode: osascript bridge ────────────────────────────────────
 

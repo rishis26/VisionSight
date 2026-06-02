@@ -223,8 +223,6 @@ App data (outside the project, never committed):
 
 **Full CLI** — Every function accessible from the terminal. No GUI required.
 
-**Dynamic Island Overlay** — Sleek, native-feeling biometric unlock notification that glides in from the top of your screen.
-
 **Clean Dark Mode Dashboard** — Sleek Apple-native PyQt6 control panel with Overview, Identities, Config, Security, and Logs pages.
 
 ### CLI Reference
