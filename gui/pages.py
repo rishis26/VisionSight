@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdi
                              QMessageBox, QFrame, QScrollArea)
 from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QFont, QPixmap, QColor
-from gui.widgets import apply_neumorphic_shadow, LiquidFrame, ToggleButton, StyledButton
+from gui.widgets import apply_apple_shadow, GlassCard, ToggleButton, StyledButton
 
 class DashboardPage(QWidget):
     def __init__(self, controller, parent=None):
@@ -23,7 +23,7 @@ class DashboardPage(QWidget):
 
         header = QLabel("SYSTEM OVERVIEW")
         header.setFont(QFont(".AppleSystemUIFont", 32, QFont.Weight.Bold))
-        header.setStyleSheet("color: #000000;")
+        header.setStyleSheet("color: #FFFFFF;")
         layout.addWidget(header)
 
         cards_layout = QHBoxLayout()
@@ -36,11 +36,11 @@ class DashboardPage(QWidget):
         
         sc_title = QLabel("DAEMON STATE")
         sc_title.setFont(QFont(".AppleSystemUIFont", 14, QFont.Weight.Bold))
-        sc_title.setStyleSheet("color: #000000;")
+        sc_title.setStyleSheet("color: #FFFFFF;")
         
         self.status_val = QLabel("CHECKING...")
         self.status_val.setFont(QFont(".AppleSystemUIFont", 36, QFont.Weight.Bold))
-        self.status_val.setStyleSheet("color: #000000;")
+        self.status_val.setStyleSheet("color: #FFFFFF;")
         
         sc_layout.addWidget(sc_title)
         sc_layout.addSpacing(5)
@@ -58,15 +58,15 @@ class DashboardPage(QWidget):
         
         ac_title = QLabel("LAST EVENT")
         ac_title.setFont(QFont(".AppleSystemUIFont", 14, QFont.Weight.Bold))
-        ac_title.setStyleSheet("color: #000000;")
+        ac_title.setStyleSheet("color: #FFFFFF;")
         
         self.auth_result = QLabel("SUCCESS")
         self.auth_result.setFont(QFont(".AppleSystemUIFont", 36, QFont.Weight.Bold))
-        self.auth_result.setStyleSheet("color: #000000; color: #007AFF;")
+        self.auth_result.setStyleSheet("color: #FFFFFF; color: #0A84FF;")
         
         self.auth_time = QLabel("09:41 AM")
         self.auth_time.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Bold))
-        self.auth_time.setStyleSheet("color: #000000; margin-top: 10px;")
+        self.auth_time.setStyleSheet("color: #FFFFFF; margin-top: 10px;")
         
         ac_layout.addWidget(ac_title)
         ac_layout.addSpacing(5)
@@ -85,7 +85,7 @@ class DashboardPage(QWidget):
         
         self.dash_video = QLabel()
         self.dash_video.setMinimumHeight(300)
-        self.dash_video.setStyleSheet("background-color: #000000;")
+        self.dash_video.setStyleSheet("background-color: #FFFFFF;")
         self.dash_video.setAlignment(Qt.AlignmentFlag.AlignCenter)
         pc_layout.addWidget(self.dash_video)
         
@@ -105,7 +105,7 @@ class IdentitiesPage(QWidget):
         
         header = QLabel("IDENTITIES")
         header.setFont(QFont(".AppleSystemUIFont", 32, QFont.Weight.Bold))
-        header.setStyleSheet("color: #000000;")
+        header.setStyleSheet("color: #FFFFFF;")
         layout.addWidget(header)
 
         split_layout = QHBoxLayout()
@@ -118,13 +118,13 @@ class IdentitiesPage(QWidget):
         
         vid_frame = QFrame()
         vid_frame.setFixedSize(360, 270)
-        vid_frame.setStyleSheet("background-color: #000000; border: 2px solid #FFFFFF; border-radius: 20px;")
+        vid_frame.setStyleSheet("background-color: #FFFFFF; border: none; border-radius: 20px;")
         v_l = QVBoxLayout(vid_frame)
         v_l.setContentsMargins(0,0,0,0)
         self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v_l.addWidget(self.video_label)
-        apply_neumorphic_shadow(vid_frame, 20, 8)
+        apply_apple_shadow(vid_frame)
         
         left_layout.addWidget(vid_frame, alignment=Qt.AlignmentFlag.AlignCenter)
 
@@ -148,8 +148,8 @@ class IdentitiesPage(QWidget):
         self.name_input.setPlaceholderText("IDENTITY NAME")
         self.name_input.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Bold))
         self.name_input.setStyleSheet("""
-            QLineEdit { padding: 16px 20px; background: #E0E5EC; border: 2px solid #FFFFFF; border-radius: 20px; color: #000000; font-weight: 500; }
-            QLineEdit:focus { border: 1px solid #007AFF; }
+            QLineEdit { padding: 16px 20px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; color: #FFFFFF; font-weight: 500; font-size: 16px; }
+            QLineEdit:focus { background: rgba(255, 255, 255, 0.1); border: 1px solid #0A84FF; color: #FFFFFF; }
         """)
         left_layout.addWidget(self.name_input)
         
@@ -169,32 +169,16 @@ class IdentitiesPage(QWidget):
         
         list_title = QLabel("AUTHORIZED IDS")
         list_title.setFont(QFont(".AppleSystemUIFont", 14, QFont.Weight.Bold))
-        list_title.setStyleSheet("color: #000000;")
+        list_title.setStyleSheet("color: #FFFFFF;")
         right_layout.addWidget(list_title)
 
         self.identity_list = QListWidget()
         self.identity_list.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Bold))
         self.identity_list.setStyleSheet("""
-            QListWidget {
-                    background-color: #E0E5EC;
-                    border: 2px solid #FFFFFF;
-                    border-radius: 20px;
-                    color: #000000;
-                    padding: 4px;
-                }
-                QListWidget::item {
-                    padding: 12px;
-                    border-bottom: 2px solid #FFFFFF; 
-                }
-                QListWidget::item:hover {
-                    background-color: #F2F2F7;
-                    border-radius: 16px;
-                }
-                QListWidget::item:selected {
-                    background: #007AFF;
-                    color: #FFFFFF; 
-                    border-radius: 16px;
-                }
+            QListWidget { background-color: transparent; border: none; color: #FFFFFF; padding: 4px; }
+                QListWidget::item { padding: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+                QListWidget::item:hover { background-color: transparent; border-radius: 8px; }
+                QListWidget::item:selected { background: #0A84FF; color: #FFFFFF; border-radius: 8px; }
         """)
         right_layout.addWidget(self.identity_list)
         
@@ -224,7 +208,7 @@ class SettingsPage(QWidget):
         header_layout = QHBoxLayout()
         header = QLabel("CONFIGURATION")
         header.setFont(QFont(".AppleSystemUIFont", 32, QFont.Weight.Bold))
-        header.setStyleSheet("color: #000000;")
+        header.setStyleSheet("color: #FFFFFF;")
         header_layout.addWidget(header)
         
         header_layout.addStretch()
@@ -253,13 +237,13 @@ class SettingsPage(QWidget):
             s.setValue(int(os.getenv(v[5], v[3])))
             s.setFixedWidth(240)
             s.setStyleSheet("""
-                QSlider::groove:horizontal { border-radius: 3px; height: 6px; background: #E5E5EA; }
-                QSlider::handle:horizontal { background: #E0E5EC; border: 1px solid #D1D1D6; width: 24px; margin: -9px 0; border-radius: 24px; }
-                QSlider::sub-page:horizontal { background: #007AFF; border-radius: 3px; }
+                QSlider::groove:horizontal { border-radius: 2px; height: 4px; background: rgba(255, 255, 255, 0.2); }
+                QSlider::handle:horizontal { background: #FFFFFF; width: 24px; margin: -10px 0; border-radius: 12px; border: 1px solid rgba(0,0,0,0.1); }
+                QSlider::sub-page:horizontal { background: #0A84FF; border-radius: 2px; }
             """)
             val_label = QLabel(f"{s.value()}S")
             val_label.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Bold))
-            val_label.setStyleSheet("color: #000000; min-width: 40px;")
+            val_label.setStyleSheet("color: #FFFFFF; min-width: 40px;")
             
             s.valueChanged.connect(lambda val, lbl=val_label: lbl.setText(f"{val}S"))
             
@@ -279,13 +263,13 @@ class SettingsPage(QWidget):
         strict_s.setValue(int(float(os.getenv("VISIONSIGHT_TOLERANCE", "0.55")) * 100))
         strict_s.setFixedWidth(240)
         strict_s.setStyleSheet("""
-                QSlider::groove:horizontal { border-radius: 3px; height: 6px; background: #E5E5EA; }
-                QSlider::handle:horizontal { background: #E0E5EC; border: 1px solid #D1D1D6; width: 24px; margin: -9px 0; border-radius: 24px; }
-                QSlider::sub-page:horizontal { background: #007AFF; border-radius: 3px; }
+                QSlider::groove:horizontal { border-radius: 2px; height: 4px; background: rgba(255, 255, 255, 0.2); }
+                QSlider::handle:horizontal { background: #FFFFFF; width: 24px; margin: -10px 0; border-radius: 12px; border: 1px solid rgba(0,0,0,0.1); }
+                QSlider::sub-page:horizontal { background: #0A84FF; border-radius: 2px; }
         """)
         strict_val = QLabel(f"{strict_s.value()/100.0}")
         strict_val.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Bold))
-        strict_val.setStyleSheet("color: #000000; min-width: 40px;")
+        strict_val.setStyleSheet("color: #FFFFFF; min-width: 40px;")
         strict_s.valueChanged.connect(lambda val, lbl=strict_val: lbl.setText(f"{val/100.0}"))
         
         sw = QWidget()
@@ -300,18 +284,19 @@ class SettingsPage(QWidget):
 
         combo_style = """
             QComboBox {
-                    padding: 8px 12px;
-                    background: #E0E5EC; color: #000000; 
-                    border: 2px solid #FFFFFF; border-radius: 20px; font-size: 14px; font-weight: 500;
-                }
-                QComboBox::drop-down { border: none; width: 30px; }
-                QComboBox QAbstractItemView {
-                    background-color: #E0E5EC;
-                    border: 2px solid #FFFFFF;
-                    border-radius: 20px;
-                    color: #000000;
-                    selection-background-color: #007AFF;
-                }
+                padding: 10px 16px;
+                background: rgba(255, 255, 255, 0.05); color: #FFFFFF; 
+                border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 8px; font-size: 14px; font-weight: 600;
+            }
+            QComboBox::drop-down { border: none; width: 30px; }
+            QComboBox QAbstractItemView {
+                background-color: transparent;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 8px;
+                color: #FFFFFF;
+                selection-background-color: #0A84FF;
+                outline: none;
+            }
         """
         self.combo_fps = QComboBox()
         self.combo_fps.addItems(["Low (5 FPS)", "Medium (10 FPS)", "High (15 FPS)"])
@@ -347,7 +332,7 @@ class SecurityPage(QWidget):
         header_layout = QHBoxLayout()
         header = QLabel("SYSTEM SECURITY")
         header.setFont(QFont(".AppleSystemUIFont", 32, QFont.Weight.Bold))
-        header.setStyleSheet("color: #000000;")
+        header.setStyleSheet("color: #FFFFFF;")
         header_layout.addWidget(header)
         header_layout.addStretch()
         layout.addLayout(header_layout)
@@ -388,7 +373,7 @@ class SecurityPage(QWidget):
         # ── Keychain section ──────────────────────────────────────────────────
         info = QLabel("VISIONSIGHT KEYCHAIN ACCESS")
         info.setFont(QFont(".AppleSystemUIFont", 22, QFont.Weight.Bold))
-        info.setStyleSheet("color: #000000;")
+        info.setStyleSheet("color: #FFFFFF;")
         form_layout.addWidget(info)
 
         desc = QLabel(
@@ -407,8 +392,8 @@ class SecurityPage(QWidget):
         self.password_input.setFont(QFont(".AppleSystemUIFont", 16, QFont.Weight.Bold))
         self.password_input.setMinimumHeight(54)
         self.password_input.setStyleSheet("""
-            QLineEdit { padding: 16px 20px; background: #E0E5EC; border: 2px solid #FFFFFF; border-radius: 20px; color: #000000; font-weight: 500; }
-            QLineEdit:focus { background: #00E5FF; border: 2px solid #FFFFFF; border-radius: 20px; }
+            QLineEdit { padding: 16px 20px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; color: #FFFFFF; font-weight: 500; font-size: 16px; }
+            QLineEdit:focus { background: rgba(255, 255, 255, 0.1); border: 1px solid #0A84FF; color: #FFFFFF; }
         """)
         form_layout.addWidget(self.password_input)
 
@@ -420,7 +405,7 @@ class SecurityPage(QWidget):
         # ── Divider ───────────────────────────────────────────────────────────
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.HLine)
-        divider.setStyleSheet("background: #000000; max-height: 3px; margin-top: 10px; margin-bottom: 10px;")
+        divider.setStyleSheet("background: #2C2C2E; max-height: 3px; margin-top: 10px; margin-bottom: 10px;")
         form_layout.addWidget(divider)
 
         # ── Danger Zone ───────────────────────────────────────────────────────
@@ -429,7 +414,7 @@ class SecurityPage(QWidget):
         danger_label.setStyleSheet("""
             color: #FFFFFF;
             background: #FF5555;
-            border: 2px solid #FFFFFF; border-radius: 20px;
+            border: none; border-radius: 20px;
             padding: 8px 16px;
             letter-spacing: 2px;
         """)
@@ -459,7 +444,7 @@ class SecurityPage(QWidget):
         btn_uninstall.setToolTip("Reset all data AND remove the global CLI symlink + shell alias, then quit")
         btn_uninstall.setStyleSheet("""
             QPushButton {
-                background: #000000;
+                background: #2C2C2E;
                 color: #FF5555;
                 border: 3px solid #FF5555;
                 font-size: 13px;
@@ -467,7 +452,7 @@ class SecurityPage(QWidget):
                 padding: 10px 18px;
                 letter-spacing: 1px;
             }
-            QPushButton:hover { background: #FF5555; color: #000000; border: 2px solid #FFFFFF; border-radius: 20px; }
+            QPushButton:hover { background: #FF5555; color: #FFFFFF; border: none; border-radius: 20px; }
             QPushButton:pressed { background: #CC0000; color: #FFFFFF; }
         """)
         btn_uninstall.clicked.connect(self.controller.uninstall_app)
@@ -495,7 +480,7 @@ class LogsPage(QWidget):
         header_layout = QHBoxLayout()
         header = QLabel("SYSTEM AUDIT")
         header.setFont(QFont(".AppleSystemUIFont", 32, QFont.Weight.Bold))
-        header.setStyleSheet("color: #000000;")
+        header.setStyleSheet("color: #FFFFFF;")
         header_layout.addWidget(header)
         header_layout.addStretch()
         
@@ -503,18 +488,19 @@ class LogsPage(QWidget):
         self.log_filter.addItems(["ALL", "SUCCESS", "DENIED"])
         self.log_filter.setStyleSheet("""
             QComboBox {
-                    padding: 8px 12px;
-                    background: #E0E5EC; color: #000000; 
-                    border: 2px solid #FFFFFF; border-radius: 20px; font-size: 14px; font-weight: 500;
-                }
-                QComboBox::drop-down { border: none; width: 30px; }
-                QComboBox QAbstractItemView {
-                    background-color: #E0E5EC;
-                    border: 2px solid #FFFFFF;
-                    border-radius: 20px;
-                    color: #000000;
-                    selection-background-color: #007AFF;
-                }
+                padding: 10px 16px;
+                background: rgba(255, 255, 255, 0.05); color: #FFFFFF; 
+                border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 8px; font-size: 14px; font-weight: 600;
+            }
+            QComboBox::drop-down { border: none; width: 30px; }
+            QComboBox QAbstractItemView {
+                background-color: transparent;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 8px;
+                color: #FFFFFF;
+                selection-background-color: #0A84FF;
+                outline: none;
+            }
         """)
         self.log_filter.currentTextChanged.connect(self.controller.refresh_logs)
         header_layout.addWidget(self.log_filter)
@@ -539,24 +525,24 @@ class LogsPage(QWidget):
         self.log_table.setFont(QFont(".AppleSystemUIFont", 14, QFont.Weight.Bold))
         self.log_table.setStyleSheet("""
             QTableWidget {
-                background-color: #E0E5EC;
+                background-color: transparent;
                 border: none;
-                color: #000000;
+                color: #FFFFFF;
             }
             QTableWidget::item {
                 padding: 15px;
                 border-bottom: 2px solid #FFFFFF;
             }
             QTableWidget::item:selected {
-                background-color: #FFD500;
+                background-color: #0A84FF;
             }
             QHeaderView::section {
-                background-color: #E0E5EC;
+                background-color: transparent;
                 padding: 15px;
                 border: none;
                 border-bottom: 2px solid #FFFFFF;
                 font-weight: 900;
-                color: #000000;
+                color: #FFFFFF;
                 font-size: 14px;
             }
         """)
@@ -598,7 +584,7 @@ class OnboardingPage(QWidget):
         cam_row = QHBoxLayout()
         self.lbl_cam_status = QLabel("📷 CAMERA PERMISSION: CHECKING...")
         self.lbl_cam_status.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Bold))
-        self.lbl_cam_status.setStyleSheet("color: #000000;")
+        self.lbl_cam_status.setStyleSheet("color: #FFFFFF;")
         self.btn_grant_cam = StyledButton("GRANT CAMERA", primary=False)
         self.btn_grant_cam.clicked.connect(self.request_camera_access)
         cam_row.addWidget(self.lbl_cam_status)
@@ -610,7 +596,7 @@ class OnboardingPage(QWidget):
         acc_row = QHBoxLayout()
         self.lbl_acc_status = QLabel("♿ ACCESSIBILITY PERMISSION: CHECKING...")
         self.lbl_acc_status.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Bold))
-        self.lbl_acc_status.setStyleSheet("color: #000000;")
+        self.lbl_acc_status.setStyleSheet("color: #FFFFFF;")
         self.btn_grant_acc = StyledButton("GRANT ACCESS", primary=False)
         self.btn_grant_acc.clicked.connect(self.open_accessibility_settings)
         acc_row.addWidget(self.lbl_acc_status)
@@ -648,7 +634,7 @@ class OnboardingPage(QWidget):
         self.wiz_pass.setPlaceholderText("ENTER MAC LOGIN PASSWORD TO CONTINUE...")
         self.wiz_pass.setFont(QFont(".AppleSystemUIFont", 20, QFont.Weight.Bold))
         self.wiz_pass.setMinimumHeight(70)
-        self.wiz_pass.setStyleSheet("QLineEdit { padding: 16px 20px; background: #E0E5EC; border: 2px solid #FFFFFF; border-radius: 20px; color: #000000; font-weight: 500; } QLineEdit:focus { background: #00E5FF; color: #000000; }")
+        self.wiz_pass.setStyleSheet("QLineEdit { padding: 16px 20px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; color: #FFFFFF; font-weight: 500; font-size: 16px; } QLineEdit:focus { background: rgba(255, 255, 255, 0.1); border: 1px solid #0A84FF; color: #FFFFFF; }")
         w1_l.addWidget(self.wiz_pass)
         
         btn_next1 = StyledButton("ENCRYPT TO KEYCHAIN && CONTINUE", primary=True)
@@ -675,7 +661,7 @@ class OnboardingPage(QWidget):
         
         self.wiz_video = QLabel()
         self.wiz_video.setFixedSize(360, 270)
-        self.wiz_video.setStyleSheet("background-color: #000000; border: 2px solid #FFFFFF; border-radius: 20px;")
+        self.wiz_video.setStyleSheet("background-color: #FFFFFF; border: none; border-radius: 20px;")
         self.wiz_video.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         vid_row = QHBoxLayout()
@@ -707,7 +693,7 @@ class OnboardingPage(QWidget):
         self.wiz_name = QLineEdit()
         self.wiz_name.setPlaceholderText("ENTER YOUR NAME (e.g. USERNAME)")
         self.wiz_name.setFont(QFont(".AppleSystemUIFont", 18, QFont.Weight.Bold))
-        self.wiz_name.setStyleSheet("QLineEdit { padding: 16px 20px; background: #E0E5EC; border: 2px solid #FFFFFF; border-radius: 20px; color: #000000; font-weight: 500; } QLineEdit:focus { background: #00E5FF; color: #000000; }")
+        self.wiz_name.setStyleSheet("QLineEdit { padding: 16px 20px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; color: #FFFFFF; font-weight: 500; font-size: 16px; } QLineEdit:focus { background: rgba(255, 255, 255, 0.1); border: 1px solid #0A84FF; color: #FFFFFF; }")
         w2_l.addWidget(self.wiz_name)
         
         btn_next2 = StyledButton("CAPTURE IDENTITY AND FINISH", primary=True)
