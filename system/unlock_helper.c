@@ -75,9 +75,9 @@ int main(void) {
         return 1;
     }
 
-    /* 1. SPACEBAR — wake the lock screen */
-    post_key(source, 49, true);
-    post_key(source, 49, false);
+    /* 1. SHIFT — wake the lock screen without typing a space */
+    post_key(source, 56, true);
+    post_key(source, 56, false);
 
     /* 2. Wait for password field to render */
     usleep(800000); /* 0.8s */
