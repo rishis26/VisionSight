@@ -100,22 +100,70 @@ def main():
         _write_stdout(json.dumps({"result": "aborted", "auth_name": ""}))
         return
 
-    # ── 8. Run the scan (camera opens here — LED turns on NOW) ───────────────
+    # ── 8. Open camera as fast as possible ───────────────────────────────────
+    # Camera LED turns on HERE (display is already on — this is expected).
+    # We open it explicitly so we can:
+    #   a) set BUFFERSIZE=1 (prevents reading stale dark frames)
+    #   b) drain the initial blank AVFoundation startup frames quickly
+    #   c) pass the already-open cap to authenticate_once (no re-init inside)
     result    = "failed"
     auth_name = ""
+
+    try:
+        import cv2 as _cv2
+        cam_idx = int(os.getenv("VISIONSIGHT_CAMERA", "0"))
+        cap = _cv2.VideoCapture(cam_idx, _cv2.CAP_AVFOUNDATION)
+        cap.set(_cv2.CAP_PROP_BUFFERSIZE, 1)   # keep only the latest frame
+
+        if not cap.isOpened():
+            print("[scan_worker] Could not open camera", file=sys.stderr)
+            sys.stdout = _real_stdout
+            _write_stdout(json.dumps({"result": "failed", "auth_name": ""}))
+            return
+
+        # Apply user-configured resolution (default 640x480 = AVFoundation native)
+        res = os.getenv("VISIONSIGHT_RESOLUTION", "640x480")
+        if res == "1280x720":
+            cap.set(_cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            cap.set(_cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        elif res != "640x480":
+            try:
+                w, h = map(int, res.split("x"))
+                cap.set(_cv2.CAP_PROP_FRAME_WIDTH, w)
+                cap.set(_cv2.CAP_PROP_FRAME_HEIGHT, h)
+            except Exception:
+                pass
+
+        # Drain early blank/dark frames so authenticate_once starts on live data.
+        # AVFoundation typically needs 2-4 reads before exposing properly.
+        for _ in range(4):
+            cap.grab()   # grab without decode — cheapest possible discard
+
+    except Exception as e:
+        print(f"[scan_worker] camera open error: {e}", file=sys.stderr)
+        sys.stdout = _real_stdout
+        _write_stdout(json.dumps({"result": "failed", "auth_name": ""}))
+        return
+
+    # ── 9. Run the scan ───────────────────────────────────────────────────────
     try:
         result = verifier.authenticate_once(
             system,
             use_esc_hook=False,
             defer_unlock=True,   # parent process handles the actual unlock
+            existing_cap=cap,    # hand off warm camera — no re-init inside
         )
         if result == "success" and verifier.AUTO_UNLOCK:
             auth_name = verifier.auth_name or ""
     except Exception as e:
         print(f"[scan_worker] scan error: {e}", file=sys.stderr)
         result = "failed"
+        try:
+            cap.release()
+        except Exception:
+            pass
 
-    # ── 9. Send result and exit ───────────────────────────────────────────────
+    # ── 10. Send result and exit ──────────────────────────────────────────────
     sys.stdout = _real_stdout
     _write_stdout(json.dumps({"result": result, "auth_name": auth_name}))
     # Process exits → OS reclaims all dlib / cv2 / numpy / face_recognition memory

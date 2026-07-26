@@ -1,4 +1,4 @@
-# VisionSight - python based facelock for mac !
+# VisionSight - python based facelock for mac ! &nbsp;`stable - 2`
 
 > **Hands-free biometric auto-unlock for macOS.**  
 > VisionSight watches your webcam in the background, recognizes your face the moment you wake your Mac, and types your password automatically.
