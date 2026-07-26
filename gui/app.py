@@ -446,6 +446,7 @@ class VisionSightGUI(QMainWindow):
         self._daemon_core.bridge.scan_requested.connect(self._on_daemon_scan_requested)
         self._daemon_core.bridge.abort_requested.connect(self._on_daemon_abort_requested)
         self._daemon_core.bridge.show_gui_requested.connect(self.show_and_raise)
+        self._daemon_core.bridge.warm_subprocess_requested.connect(self._on_subprocess_warmup_requested)
         self._daemon_core.start()
 
     def stop_daemon_thread(self):
@@ -461,8 +462,26 @@ class VisionSightGUI(QMainWindow):
             self.stop_daemon_thread()
         QTimer.singleShot(600, self.refresh_dashboard_status)
 
-    def _on_daemon_scan_requested(self):
+    def _on_subprocess_warmup_requested(self):
+        """
+        Pre-spawn the scan worker subprocess while the display is asleep.
+        The subprocess imports Python + dlib in the background (NO camera).
+        When the display wakes and a scan is triggered, only AVFoundation
+        camera init remains (~1-2 s instead of 5-8 s total).
+        """
         if self._scan_thread and self._scan_thread.isRunning():
+            return  # warmup or active scan already in progress
+        self.stop_camera()
+        self._scan_thread = ScanProcessThread(parent=self, immediate=False)
+        self._scan_thread.scan_complete.connect(self._on_daemon_scan_complete)
+        self._scan_thread.start()
+        print("Pre-spawning scan worker (dlib loading in background, no camera yet)...")
+
+    def _on_daemon_scan_requested(self):
+        # If already actively scanning, ignore duplicate signals
+        if (self._scan_thread
+                and self._scan_thread.isRunning()
+                and self._scan_thread._phase == "scanning"):
             return
 
         import system.paths as paths
@@ -473,14 +492,19 @@ class VisionSightGUI(QMainWindow):
         if elapsed < cooldown:
             return
 
-        # Stop any running camera preview — the subprocess opens its own
-        # dedicated camera session (subprocess has no PyQt6, so no QThread
-        # requirement for cv2.VideoCapture on macOS).
         self.stop_camera()
 
-        self._scan_thread = ScanProcessThread(parent=self)
-        self._scan_thread.scan_complete.connect(self._on_daemon_scan_complete)
-        self._scan_thread.start()
+        if self._scan_thread and self._scan_thread.isRunning():
+            # Pre-warmed subprocess exists (may still be importing or already ready).
+            # trigger_scan() uses a threading.Event so it works in both states.
+            print("Triggering pre-warmed subprocess for scan...")
+            self._scan_thread.trigger_scan()
+        else:
+            # No warmup available — cold-start subprocess and scan immediately.
+            print("Cold-starting scan subprocess (no warmup available)...")
+            self._scan_thread = ScanProcessThread(parent=self, immediate=True)
+            self._scan_thread.scan_complete.connect(self._on_daemon_scan_complete)
+            self._scan_thread.start()
 
     def _on_daemon_abort_requested(self):
         if self._scan_thread and self._scan_thread.isRunning():

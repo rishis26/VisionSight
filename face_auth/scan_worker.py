@@ -1,17 +1,22 @@
 """
 Standalone face-recognition worker — spawned by VisionSight for each scan.
 
-Because this script exits after every scan, the OS reclaims 100% of dlib
-and cv2 memory on exit. The parent tray process never loads these libraries
+Because this process exits after every scan, the OS reclaims 100% of
+dlib/cv2 memory on exit. The parent tray process never loads these libs
 and permanently stays at its ~84 MB private-memory baseline.
 
-Protocol (line-oriented JSON over stdin / stdout):
-  stdin  ← single JSON line with {"project_root": "...", "env_path": "..."}
-  stdout → single JSON line {"result": "success"|"rejected"|"aborted"|"failed",
-                             "auth_name": "<name>"|""}
+Two-phase protocol (line-oriented over stdin / stdout):
+  Phase 1 — import:
+    stdin  ← JSON config {"project_root": "...", "env_path": "..."}
+    stdout → "ready"     (dlib loaded, camera NOT open yet)
 
-All diagnostic prints (from FaceVerifier etc.) are redirected to stderr so
-they never corrupt the stdout JSON channel.
+  Phase 2 — scan:
+    stdin  ← "scan" | "abort"
+    stdout → JSON result {"result": "success"|"rejected"|"aborted"|"failed",
+                          "auth_name": "<name>"|""}
+
+All diagnostic prints (FaceVerifier logs etc.) are redirected to stderr so
+they never corrupt the stdout channel.
 """
 
 import sys
@@ -23,13 +28,15 @@ def main():
     # ── 1. Read config from parent ────────────────────────────────────────────
     raw = sys.stdin.readline()
     if not raw.strip():
-        _send({"result": "failed", "auth_name": ""})
+        _write_stdout("ready")          # still need to ack so parent doesn't hang
+        _write_stdout(json.dumps({"result": "failed", "auth_name": ""}))
         return
 
     try:
         config = json.loads(raw)
-    except Exception:
-        _send({"result": "failed", "auth_name": ""})
+    except Exception as e:
+        _write_stdout("ready")
+        _write_stdout(json.dumps({"result": "failed", "auth_name": ""}))
         return
 
     project_root = config.get("project_root", "")
@@ -39,47 +46,85 @@ def main():
     if project_root and project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-    # ── 3. Silence all prints to stdout so JSON channel stays clean ───────────
+    # ── 3. Redirect print() to stderr so stdout stays clean ──────────────────
     _real_stdout = sys.stdout
-    sys.stdout = sys.stderr          # all print() in FaceVerifier → stderr
+    sys.stdout   = sys.stderr   # FaceVerifier / dlib prints → stderr (invisible to parent)
 
     # ── 4. Load environment settings ─────────────────────────────────────────
-    from dotenv import load_dotenv
-    load_dotenv(env_path, override=True)
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(env_path, override=True)
+    except Exception:
+        pass
 
-    # ── 5. Import heavy deps HERE — they live only in this process ────────────
-    #       When this process exits, the OS reclaims all dlib / cv2 memory.
-    from face_auth.verify import FaceVerifier
-    from system.lock import SystemController
+    # ── 5. Import heavy deps (only in this subprocess) ───────────────────────
+    import_ok = True
+    try:
+        from face_auth.verify import FaceVerifier
+        from system.lock import SystemController
+    except Exception as e:
+        print(f"[scan_worker] import error: {e}", file=sys.stderr)
+        import_ok = False
 
-    # ── 6. Run the scan ───────────────────────────────────────────────────────
-    system   = SystemController()
-    verifier = FaceVerifier(headless=True)
-    result   = "failed"
+    if not import_ok:
+        sys.stdout = _real_stdout
+        _write_stdout("ready")   # ack so parent doesn't hang forever
+        _write_stdout(json.dumps({"result": "failed", "auth_name": ""}))
+        return
 
+    # Create objects (loads encodings; camera still NOT open)
+    try:
+        system   = SystemController()
+        verifier = FaceVerifier(headless=True)
+    except Exception as e:
+        print(f"[scan_worker] init error: {e}", file=sys.stderr)
+        sys.stdout = _real_stdout
+        _write_stdout("ready")
+        _write_stdout(json.dumps({"result": "failed", "auth_name": ""}))
+        return
+
+    # ── 6. Signal ready (dlib loaded, camera NOT open yet) ───────────────────
+    sys.stdout = _real_stdout
+    _write_stdout("ready")
+    sys.stdout = sys.stderr   # redirect again for scan output
+
+    # ── 7. Wait for scan or abort command ────────────────────────────────────
+    cmd = ""
+    try:
+        cmd = sys.stdin.readline().strip()
+    except Exception:
+        pass
+
+    if cmd != "scan":
+        sys.stdout = _real_stdout
+        _write_stdout(json.dumps({"result": "aborted", "auth_name": ""}))
+        return
+
+    # ── 8. Run the scan (camera opens here — LED turns on NOW) ───────────────
+    result    = "failed"
+    auth_name = ""
     try:
         result = verifier.authenticate_once(
             system,
             use_esc_hook=False,
             defer_unlock=True,   # parent process handles the actual unlock
         )
+        if result == "success" and verifier.AUTO_UNLOCK:
+            auth_name = verifier.auth_name or ""
     except Exception as e:
-        print(f"[scan_worker] exception during scan: {e}", file=sys.stderr)
+        print(f"[scan_worker] scan error: {e}", file=sys.stderr)
         result = "failed"
 
-    auth_name = ""
-    if result == "success" and verifier.AUTO_UNLOCK:
-        auth_name = verifier.auth_name or ""
-
-    # ── 7. Restore stdout and send result ────────────────────────────────────
+    # ── 9. Send result and exit ───────────────────────────────────────────────
     sys.stdout = _real_stdout
-    _send({"result": result, "auth_name": auth_name})
-    # Process exits here → OS reclaims all dlib / cv2 / numpy / face_recognition
-    # memory. Parent tray process stays at its ~84 MB private-memory baseline.
+    _write_stdout(json.dumps({"result": result, "auth_name": auth_name}))
+    # Process exits → OS reclaims all dlib / cv2 / numpy / face_recognition memory
 
 
-def _send(data: dict):
-    print(json.dumps(data), flush=True)
+def _write_stdout(line: str):
+    """Write a single line to the REAL stdout (not the stderr-redirected one)."""
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":

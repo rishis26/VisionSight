@@ -56,6 +56,10 @@ class DaemonBridge(QObject):
     # → main thread: show and raise the GUI window
     show_gui_requested = pyqtSignal()
 
+    # → main thread: display is asleep while locked — pre-warm the scan subprocess
+    #   (imports Python + dlib in the background, NO camera opened)
+    warm_subprocess_requested = pyqtSignal()
+
 
 # ── Cocoa Notification Listener ───────────────────────────────────────────────
 
@@ -96,6 +100,12 @@ class OSNotificationListener(NSObject):
     def screenAsleep_(self, notification):
         print("\n💤 [OS EVENT] Display Sleep Detected.")
         self._bridge.abort_requested.emit()
+        # If screen is locked, pre-warm the scan subprocess NOW while the display
+        # is asleep. The subprocess imports Python + dlib in the background.
+        # NO camera is opened — camera only opens when the actual scan starts.
+        if self._system._is_macos_locked():
+            print("🔒 Screen locked during sleep — pre-warming scan worker...")
+            self._bridge.warm_subprocess_requested.emit()
 
 
 # ── Daemon Core ────────────────────────────────────────────────────────────────
