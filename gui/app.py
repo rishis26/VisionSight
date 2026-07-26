@@ -17,7 +17,7 @@ from dotenv import load_dotenv, set_key
 
 from main import DaemonCore
 from gui.widgets import apply_apple_shadow, GlassCard, ToggleButton, StyledButton, NavButton
-from gui.threads import CameraThread, DaemonScanThread
+from gui.threads import CameraThread, ScanProcessThread, DaemonScanThread
 from gui.pages import (DashboardPage, IdentitiesPage, SettingsPage, 
                        SecurityPage, LogsPage, OnboardingPage)
 
@@ -48,7 +48,7 @@ class VisionSightGUI(QMainWindow):
         self._face_detect_counter = 0   # throttle live face-detection checks
 
         self._daemon_core: DaemonCore | None = None
-        self._scan_thread: DaemonScanThread | None = None
+        self._scan_thread: ScanProcessThread | None = None
         self._last_scan_end: float = 0.0
 
         # Keyboard Shortcuts for standard macOS behaviors (Cmd+M to minimize, Cmd+Ctrl+F to fullscreen)
@@ -473,8 +473,12 @@ class VisionSightGUI(QMainWindow):
         if elapsed < cooldown:
             return
 
+        # Stop any running camera preview — the subprocess opens its own
+        # dedicated camera session (subprocess has no PyQt6, so no QThread
+        # requirement for cv2.VideoCapture on macOS).
         self.stop_camera()
-        self._scan_thread = DaemonScanThread(parent=self)
+
+        self._scan_thread = ScanProcessThread(parent=self)
         self._scan_thread.scan_complete.connect(self._on_daemon_scan_complete)
         self._scan_thread.start()
 
@@ -807,12 +811,15 @@ class VisionSightGUI(QMainWindow):
             print(f"⚠️ Could not set activation policy to Accessory: {e}")
 
     def show_and_raise(self):
-        print("🖥️ [GUI EVENT] Raising dashboard GUI window to front...")
+        print("[GUI EVENT] Raising dashboard GUI window to front...")
         self.set_mac_activation_policy_regular()
         self.show()
         self.activateWindow()
         self.raise_()
         self.switch_to_page(0)
+        # Resume polling now that window is visible again
+        if not self.status_timer.isActive():
+            self.status_timer.start(2000)
 
     def open_settings_page(self):
         self.set_mac_activation_policy_regular()
@@ -827,12 +834,16 @@ class VisionSightGUI(QMainWindow):
             self.quit_app()
             return
         
-        print("🔴 Window closing — hiding to system tray...")
+        print("Window closing — hiding to system tray...")
         self.stop_camera()
         import cv2
         cv2.destroyAllWindows()
         self.hide()
         self.set_mac_activation_policy_accessory()
+        # Pause the dashboard timer while hidden — no point polling log file
+        # every 2s when there's nothing to display. Resumes in show_and_raise().
+        if self.status_timer.isActive():
+            self.status_timer.stop()
         
         if not hasattr(self, '_first_hide_done'):
             self.tray_icon.showMessage(
@@ -856,7 +867,7 @@ class VisionSightGUI(QMainWindow):
         return super().eventFilter(obj, event)
 
     def quit_app(self):
-        print("🛑 Shutting down VisionSight completely...")
+        print("Shutting down VisionSight completely...")
         try:
             if hasattr(self, 'status_timer') and self.status_timer.isActive():
                 self.status_timer.stop()

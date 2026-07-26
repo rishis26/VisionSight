@@ -104,7 +104,7 @@ class FaceVerifier:
 
 
 
-    def authenticate_once(self, system_controller, use_esc_hook: bool = True, defer_unlock: bool = False):
+    def authenticate_once(self, system_controller, use_esc_hook: bool = True, defer_unlock: bool = False, existing_cap=None):
         """
         Returns one of four states:
         - 'success'  : face matched and unlock triggered
@@ -125,34 +125,41 @@ class FaceVerifier:
         CGEventPost(kCGHIDEventTap) silently fails from background threads
         on macOS — the unlock MUST happen on the main/NSApplication thread.
         """
-        print("🟢 CAMERA WARMUP: Booting webcam session...")
-        self.cap = cv2.VideoCapture(self.video_source, cv2.CAP_AVFOUNDATION)
-        
-        if not self.cap.isOpened():
-            print("⚠️ Error: Could not open webcam.")
-            return "failed"
-            
-        # Apply Configuration for Camera Setup
-        # Bypassing properties when they match default settings prevents costly AVFoundation stream renegotiations.
-        if self.RESOLUTION_SETTING == "1280x720":
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        elif self.RESOLUTION_SETTING != "640x480":
-            try:
-                w, h = map(int, self.RESOLUTION_SETTING.split('x'))
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-            except Exception:
-                pass
-            
-        if self.FPS_SETTING == "Low":
-            self.cap.set(cv2.CAP_PROP_FPS, 10)
-        elif self.FPS_SETTING == "High":
-            # Native high speed (usually 30 FPS), skip throttling to avoid delays
-            pass
+        if existing_cap is not None and existing_cap.isOpened():
+            # Camera handoff path: reuse the already-open VideoCapture from the
+            # live preview thread. Eliminates AVFoundation re-init (1-3s), resolution
+            # renegotiation, and the exposure warmup that comes with a cold open.
+            print("INSTANT START: Reusing pre-opened camera (zero cold-start latency).")
+            self.cap = existing_cap
         else:
-            # Medium (Default): run at native high frame rate (30 FPS) for faster exposure adjustment
-            pass
+            print("CAMERA WARMUP: Booting webcam session...")
+            self.cap = cv2.VideoCapture(self.video_source, cv2.CAP_AVFOUNDATION)
+
+            if not self.cap.isOpened():
+                print("Error: Could not open webcam.")
+                return "failed"
+
+            # Apply Configuration for Camera Setup
+            # Bypassing properties when they match default settings prevents costly AVFoundation stream renegotiations.
+            if self.RESOLUTION_SETTING == "1280x720":
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            elif self.RESOLUTION_SETTING != "640x480":
+                try:
+                    w, h = map(int, self.RESOLUTION_SETTING.split('x'))
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                except Exception:
+                    pass
+
+            if self.FPS_SETTING == "Low":
+                self.cap.set(cv2.CAP_PROP_FPS, 10)
+            elif self.FPS_SETTING == "High":
+                # Native high speed (usually 30 FPS), skip throttling to avoid delays
+                pass
+            else:
+                # Medium (Default): run at native high frame rate (30 FPS) for faster exposure adjustment
+                pass
 
         print("👁️‍🗨️ SCANNING: Waiting for authorized face... (Press Esc to stop)")
 
