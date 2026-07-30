@@ -174,9 +174,9 @@ class ScanProcessThread(QThread):
             # ── Phase 2: wait for scan trigger ────────────────────────────────
             # In warmup mode: block here until trigger_scan() is called.
             # In immediate mode: _scan_event was pre-set, so this returns instantly.
-            self._scan_event.wait(timeout=600)   # 10-minute idle limit
+            triggered = self._scan_event.wait(timeout=600)   # 10-minute idle limit
 
-            if self._abort_requested:
+            if not triggered or self._abort_requested:
                 # Tell worker to exit cleanly
                 try:
                     self._proc.stdin.write(b"abort\n")

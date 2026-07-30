@@ -1,22 +1,14 @@
 """
 Standalone face-recognition worker — spawned by VisionSight for each scan.
 
-Because this process exits after every scan, the OS reclaims 100% of
-dlib/cv2 memory on exit. The parent tray process never loads these libs
-and permanently stays at its ~84 MB private-memory baseline.
+Two-phase protocol:
+  Phase 1 (import):  stdin  ← JSON config
+                     stdout → "ready"    (dlib loaded, NO camera)
 
-Two-phase protocol (line-oriented over stdin / stdout):
-  Phase 1 — import:
-    stdin  ← JSON config {"project_root": "...", "env_path": "..."}
-    stdout → "ready"     (dlib loaded, camera NOT open yet)
+  Phase 2 (scan):    stdin  ← "scan" | "abort"
+                     stdout → JSON result {"result": ..., "auth_name": ...}
 
-  Phase 2 — scan:
-    stdin  ← "scan" | "abort"
-    stdout → JSON result {"result": "success"|"rejected"|"aborted"|"failed",
-                          "auth_name": "<name>"|""}
-
-All diagnostic prints (FaceVerifier logs etc.) are redirected to stderr so
-they never corrupt the stdout channel.
+All diagnostic prints are redirected to stderr so they never corrupt stdout.
 """
 
 import sys
@@ -24,134 +16,123 @@ import os
 import json
 
 
+def _write(line: str):
+    """Write one line to the real stdout (even when sys.stdout is redirected)."""
+    sys.stdout.write(line + "\n")
+    sys.stdout.flush()
+
+
 def main():
-    # ── 1. Read config from parent ────────────────────────────────────────────
+    # ── 1. Read config ────────────────────────────────────────────────────────
     raw = sys.stdin.readline()
     if not raw.strip():
-        _write_stdout("ready")          # still need to ack so parent doesn't hang
-        _write_stdout(json.dumps({"result": "failed", "auth_name": ""}))
+        _write("ready")
+        _write(json.dumps({"result": "failed", "auth_name": ""}))
         return
 
     try:
         config = json.loads(raw)
-    except Exception as e:
-        _write_stdout("ready")
-        _write_stdout(json.dumps({"result": "failed", "auth_name": ""}))
+    except Exception:
+        _write("ready")
+        _write(json.dumps({"result": "failed", "auth_name": ""}))
         return
 
     project_root = config.get("project_root", "")
     env_path     = config.get("env_path", "")
 
-    # ── 2. Make VisionSight modules importable ────────────────────────────────
+    # ── 2. Add project to path ────────────────────────────────────────────────
     if project_root and project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-    # ── 3. Redirect print() to stderr so stdout stays clean ──────────────────
+    # ── 3. Redirect print() to stderr so stdout channel stays clean ───────────
     _real_stdout = sys.stdout
-    sys.stdout   = sys.stderr   # FaceVerifier / dlib prints → stderr (invisible to parent)
+    sys.stdout   = sys.stderr
 
-    # ── 4. Load environment settings ─────────────────────────────────────────
+    # ── 4. Load env ───────────────────────────────────────────────────────────
     try:
         from dotenv import load_dotenv
         load_dotenv(env_path, override=True)
     except Exception:
         pass
 
-    # ── 5. Import heavy deps (only in this subprocess) ───────────────────────
-    import_ok = True
+    # ── 5. Import heavy deps (dlib / cv2 / face_recognition) ─────────────────
     try:
         from face_auth.verify import FaceVerifier
         from system.lock import SystemController
     except Exception as e:
         print(f"[scan_worker] import error: {e}", file=sys.stderr)
-        import_ok = False
-
-    if not import_ok:
         sys.stdout = _real_stdout
-        _write_stdout("ready")   # ack so parent doesn't hang forever
-        _write_stdout(json.dumps({"result": "failed", "auth_name": ""}))
+        _write("ready")
+        _write(json.dumps({"result": "failed", "auth_name": ""}))
         return
 
-    # Create objects (loads encodings; camera still NOT open)
+    # ── 6. Initialise objects (loads face encodings; camera still NOT open) ───
     try:
         system   = SystemController()
         verifier = FaceVerifier(headless=True)
     except Exception as e:
         print(f"[scan_worker] init error: {e}", file=sys.stderr)
         sys.stdout = _real_stdout
-        _write_stdout("ready")
-        _write_stdout(json.dumps({"result": "failed", "auth_name": ""}))
+        _write("ready")
+        _write(json.dumps({"result": "failed", "auth_name": ""}))
         return
 
-    # ── 6. Signal ready (dlib loaded, camera NOT open yet) ───────────────────
+    # ── 7. Signal ready — dlib is loaded, camera LED is still off ─────────────
     sys.stdout = _real_stdout
-    _write_stdout("ready")
-    sys.stdout = sys.stderr   # redirect again for scan output
+    _write("ready")
+    sys.stdout = sys.stderr
 
-    # ── 7. Wait for scan or abort command ────────────────────────────────────
-    cmd = ""
+    # ── 8. Wait for scan or abort command ────────────────────────────────────
     try:
         cmd = sys.stdin.readline().strip()
     except Exception:
-        pass
+        cmd = ""
 
     if cmd != "scan":
         sys.stdout = _real_stdout
-        _write_stdout(json.dumps({"result": "aborted", "auth_name": ""}))
+        _write(json.dumps({"result": "aborted", "auth_name": ""}))
         return
 
-    # ── 8. Open camera as fast as possible ───────────────────────────────────
-    # Camera LED turns on HERE (display is already on — this is expected).
-    # We open it explicitly so we can:
-    #   a) set BUFFERSIZE=1 (prevents reading stale dark frames)
-    #   b) drain the initial blank AVFoundation startup frames quickly
-    #   c) pass the already-open cap to authenticate_once (no re-init inside)
+    # ── 9. Open camera (LED turns on HERE — display is already on) ────────────
     result    = "failed"
     auth_name = ""
+    cap       = None
 
     try:
-        import cv2 as _cv2
+        import cv2
         cam_idx = int(os.getenv("VISIONSIGHT_CAMERA", "0"))
-        cap = _cv2.VideoCapture(cam_idx, _cv2.CAP_AVFOUNDATION)
-        cap.set(_cv2.CAP_PROP_BUFFERSIZE, 1)   # keep only the latest frame
+        cap = cv2.VideoCapture(cam_idx, cv2.CAP_AVFOUNDATION)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # keep only the freshest frame
 
         if not cap.isOpened():
-            print("[scan_worker] Could not open camera", file=sys.stderr)
+            print("[scan_worker] Failed to open camera", file=sys.stderr)
             sys.stdout = _real_stdout
-            _write_stdout(json.dumps({"result": "failed", "auth_name": ""}))
+            _write(json.dumps({"result": "failed", "auth_name": ""}))
             return
 
-        # Apply user-configured resolution (default 640x480 = AVFoundation native)
-        res = os.getenv("VISIONSIGHT_RESOLUTION", "640x480")
-        if res == "1280x720":
-            cap.set(_cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            cap.set(_cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        elif res != "640x480":
-            try:
-                w, h = map(int, res.split("x"))
-                cap.set(_cv2.CAP_PROP_FRAME_WIDTH, w)
-                cap.set(_cv2.CAP_PROP_FRAME_HEIGHT, h)
-            except Exception:
-                pass
-
-        # Drain early blank/dark frames so authenticate_once starts on live data.
-        # AVFoundation typically needs 2-4 reads before exposing properly.
-        for _ in range(4):
-            cap.grab()   # grab without decode — cheapest possible discard
+        # Drain the initial dark / underexposed AVFoundation startup frames
+        # so face recognition begins on a live, properly-exposed frame.
+        for _ in range(3):
+            cap.grab()
 
     except Exception as e:
-        print(f"[scan_worker] camera open error: {e}", file=sys.stderr)
+        print(f"[scan_worker] camera error: {e}", file=sys.stderr)
+        if cap:
+            try:
+                cap.release()
+            except Exception:
+                pass
         sys.stdout = _real_stdout
-        _write_stdout(json.dumps({"result": "failed", "auth_name": ""}))
+        _write(json.dumps({"result": "failed", "auth_name": ""}))
         return
 
-    # ── 9. Run the scan ───────────────────────────────────────────────────────
+    # ── 10. Run face recognition ──────────────────────────────────────────────
     try:
         result = verifier.authenticate_once(
             system,
             use_esc_hook=False,
-            defer_unlock=True,   # parent process handles the actual unlock
-            existing_cap=cap,    # hand off warm camera — no re-init inside
+            defer_unlock=True,    # parent process does the actual unlock
+            existing_cap=cap,     # hand off warm cap — no re-init inside
         )
         if result == "success" and verifier.AUTO_UNLOCK:
             auth_name = verifier.auth_name or ""
@@ -163,16 +144,11 @@ def main():
         except Exception:
             pass
 
-    # ── 10. Send result and exit ──────────────────────────────────────────────
+    # ── 11. Send result and exit ──────────────────────────────────────────────
+    # On exit the OS reclaims ALL dlib / cv2 / face_recognition memory,
+    # returning the parent tray process to its ~84 MB private-memory baseline.
     sys.stdout = _real_stdout
-    _write_stdout(json.dumps({"result": result, "auth_name": auth_name}))
-    # Process exits → OS reclaims all dlib / cv2 / numpy / face_recognition memory
-
-
-def _write_stdout(line: str):
-    """Write a single line to the REAL stdout (not the stderr-redirected one)."""
-    sys.stdout.write(line + "\n")
-    sys.stdout.flush()
+    _write(json.dumps({"result": result, "auth_name": auth_name}))
 
 
 if __name__ == "__main__":

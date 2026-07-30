@@ -45,13 +45,12 @@ class VisionSightGUI(QMainWindow):
         self.camera_thread = None
         self.current_cv_frame = None
         self.identity_preview_mode = False
-        self._face_detect_counter = 0   # throttle live face-detection checks
+        self._face_detect_counter = 0
 
         self._daemon_core: DaemonCore | None = None
         self._scan_thread: ScanProcessThread | None = None
         self._last_scan_end: float = 0.0
 
-        # Keyboard Shortcuts for standard macOS behaviors (Cmd+M to minimize, Cmd+Ctrl+F to fullscreen)
         self.shortcut_minimize = QShortcut(QKeySequence("Ctrl+M"), self)
         self.shortcut_minimize.activated.connect(self.showMinimized)
 
@@ -508,7 +507,15 @@ class VisionSightGUI(QMainWindow):
 
     def _on_daemon_abort_requested(self):
         if self._scan_thread and self._scan_thread.isRunning():
-            self._scan_thread.abort()
+            from system.lock import SystemController
+            system = SystemController()
+            is_locked = system._is_macos_locked()
+            
+            # If screen is unlocked, ALWAYS kill the worker to free RAM.
+            # If screen is locked (e.g. going to sleep), only abort if actively scanning.
+            # This preserves the pre-warmed worker across display sleep.
+            if not is_locked or getattr(self._scan_thread, "_phase", "") == "scanning":
+                self._scan_thread.abort()
 
     def _on_daemon_scan_complete(self, result: str, user_name: str):
         self._last_scan_end = time.time()

@@ -81,7 +81,13 @@ class OSNotificationListener(NSObject):
         return self
 
     def screenLocked_(self, notification):
-        print("\n🔒 [OS EVENT] Screen Locked. Waiting for display wake...")
+        print("\n🔒 [OS EVENT] Screen Locked.")
+        # Start pre-warming the scan subprocess NOW while the lock screen is
+        # still visible and the display is on.  dlib (~5s import) loads in the
+        # background so by the time the display wakes, only camera init remains.
+        # NO camera is opened here — camera LED stays off until display wakes.
+        print("🔄 Pre-warming scan worker (dlib will be ready before display wakes)...")
+        self._bridge.warm_subprocess_requested.emit()
 
     def screenAwake_(self, notification):
         print("\n☀️ [OS EVENT] Display Wake Detected.")
