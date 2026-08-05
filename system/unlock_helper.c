@@ -43,14 +43,14 @@ static void post_char(CGEventSourceRef source, UniChar c) {
     CGEventPost(kCGHIDEventTap, down);
     CFRelease(down);
 
-    usleep(20000); /* 20ms key-down hold */
+    usleep(3000); /* 3ms key-down hold */
 
     CGEventRef up = CGEventCreateKeyboardEvent(source, 0, false);
     CGEventKeyboardSetUnicodeString(up, 1, &c);
     CGEventPost(kCGHIDEventTap, up);
     CFRelease(up);
 
-    usleep(20000); /* 20ms inter-key gap */
+    usleep(3000); /* 3ms inter-key gap */
 }
 
 int main(void) {
@@ -80,7 +80,7 @@ int main(void) {
     post_key(source, 56, false);
 
     /* 2. Wait for password field to render */
-    usleep(800000); /* 0.8s */
+    usleep(50000); /* 50ms */
 
     /* 3. Type each character */
     for (size_t i = 0; i < len; i++) {
@@ -88,7 +88,7 @@ int main(void) {
     }
 
     /* 4. Brief settle before Enter */
-    usleep(50000); /* 50ms */
+    usleep(20000); /* 20ms */
 
     /* 5. ENTER — submit */
     post_key(source, 36, true);

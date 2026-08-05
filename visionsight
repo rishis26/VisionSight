@@ -422,7 +422,7 @@ def main():
         stop_daemon()
     elif cmd == "gui":
         launch_gui(minimized=False)
-    elif cmd == "status":
+    elif cmd in ("status", "monitor"):
         print_status()
     elif cmd in ("version", "--version", "-v"):
         print("VisionSight Version 5.0")

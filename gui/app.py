@@ -47,6 +47,9 @@ class VisionSightGUI(QMainWindow):
         self.identity_preview_mode = False
         self._face_detect_counter = 0
 
+        from system.lock import SystemController
+        self._system_controller = SystemController()
+
         self._daemon_core: DaemonCore | None = None
         self._scan_thread: ScanProcessThread | None = None
         self._last_scan_end: float = 0.0
@@ -471,6 +474,8 @@ class VisionSightGUI(QMainWindow):
         if self._scan_thread and self._scan_thread.isRunning():
             return  # warmup or active scan already in progress
         self.stop_camera()
+        if self._scan_thread is not None:
+            self._scan_thread.deleteLater()
         self._scan_thread = ScanProcessThread(parent=self, immediate=False)
         self._scan_thread.scan_complete.connect(self._on_daemon_scan_complete)
         self._scan_thread.start()
@@ -501,15 +506,15 @@ class VisionSightGUI(QMainWindow):
         else:
             # No warmup available — cold-start subprocess and scan immediately.
             print("Cold-starting scan subprocess (no warmup available)...")
+            if self._scan_thread is not None:
+                self._scan_thread.deleteLater()
             self._scan_thread = ScanProcessThread(parent=self, immediate=True)
             self._scan_thread.scan_complete.connect(self._on_daemon_scan_complete)
             self._scan_thread.start()
 
     def _on_daemon_abort_requested(self):
         if self._scan_thread and self._scan_thread.isRunning():
-            from system.lock import SystemController
-            system = SystemController()
-            is_locked = system._is_macos_locked()
+            is_locked = self._system_controller._is_macos_locked()
             
             # If screen is unlocked, ALWAYS kill the worker to free RAM.
             # If screen is locked (e.g. going to sleep), only abort if actively scanning.
@@ -519,12 +524,12 @@ class VisionSightGUI(QMainWindow):
 
     def _on_daemon_scan_complete(self, result: str, user_name: str):
         self._last_scan_end = time.time()
+        if self._scan_thread is not None:
+            self._scan_thread.deleteLater()
         self._scan_thread = None
 
         if result == "success" and user_name:
-            from system.lock import SystemController
-            main_thread_controller = SystemController()
-            main_thread_controller.simulate_unlock(user_name)
+            self._system_controller.simulate_unlock(user_name)
 
         if self.isVisible() and self.content_stack.currentIndex() in [0, 1]:
             self.start_camera()
@@ -532,6 +537,21 @@ class VisionSightGUI(QMainWindow):
 
     def refresh_dashboard_status(self):
         running = self.is_daemon_running()
+        
+        content = ""
+        lines = []
+        if os.path.exists(self.log_path):
+            try:
+                file_size = os.path.getsize(self.log_path)
+                read_size = min(file_size, 8192)
+                with open(self.log_path, 'rb') as f:
+                    if file_size > read_size:
+                        f.seek(-read_size, os.SEEK_END)
+                    content = f.read().decode(errors='replace')
+                lines = content.splitlines()
+            except Exception:
+                pass
+                
         if not running:
             self.status_val.setText("OFFLINE")
             self.status_val.setStyleSheet("color: #FFFFFF; background: #FF5555; padding: 0 5px;")
@@ -540,9 +560,7 @@ class VisionSightGUI(QMainWindow):
             self.daemon_toggle.setCheckedNoSignal(True)
             state = "IDLE"
             style = "color: #000000; background: #FFD500; padding: 0 5px;"
-            if os.path.exists(self.log_path):
-                with open(self.log_path, 'r') as f:
-                    lines = f.readlines()
+            if lines:
                 last_meaningful = ""
                 for line in reversed(lines):
                     if line.strip():
@@ -569,9 +587,7 @@ class VisionSightGUI(QMainWindow):
                     self.start_camera()
         
 
-        if os.path.exists(self.log_path):
-            with open(self.log_path, 'r') as f:
-                content = f.read()
+        if content:
             if "Daemon started" in content:
                 self.auth_result.setText("ACTIVE")
                 self.auth_result.setStyleSheet("color: #FFFFFF; background: #32D74B; border-radius: 4px; padding: 2px 8px;")
@@ -590,10 +606,17 @@ class VisionSightGUI(QMainWindow):
                 self.auth_time.setText("--")
                 return
 
-            mod_time = os.path.getmtime(self.log_path)
-            import datetime
-            dt = datetime.datetime.fromtimestamp(mod_time)
-            self.auth_time.setText("TRIGGERED: " + dt.strftime("%B %d, %I:%M %p").upper())
+            try:
+                mod_time = os.path.getmtime(self.log_path)
+                import datetime
+                dt = datetime.datetime.fromtimestamp(mod_time)
+                self.auth_time.setText("TRIGGERED: " + dt.strftime("%B %d, %I:%M %p").upper())
+            except Exception:
+                pass
+        else:
+            self.auth_result.setText("NO DATA")
+            self.auth_result.setStyleSheet("color: #8E8E93; background: transparent;")
+            self.auth_time.setText("--")
 
     def show_identity_preview(self):
         selected = self.identity_list.selectedItems()
@@ -719,8 +742,10 @@ class VisionSightGUI(QMainWindow):
         self.camera_thread.start()
 
     def stop_camera(self):
-        if self.camera_thread is not None and self.camera_thread.isRunning():
-            self.camera_thread.stop()
+        if self.camera_thread is not None:
+            if self.camera_thread.isRunning():
+                self.camera_thread.stop()
+            self.camera_thread.deleteLater()
             self.camera_thread = None
             
         self.dash_video.clear()
@@ -969,6 +994,8 @@ class VisionSightGUI(QMainWindow):
         try:
             subprocess.run(['security', 'delete-generic-password', '-a', os.getlogin(), '-s', 'VisionSightDaemon'], capture_output=True)
             subprocess.run(['security', 'add-generic-password', '-a', os.getlogin(), '-s', 'VisionSightDaemon', '-w', mac_password], check=True)
+            if hasattr(self, '_system_controller') and self._system_controller:
+                self._system_controller.clear_cached_password()
             QMessageBox.information(self, "SUCCESS", "PASSWORD SECURELY ENCRYPTED IN KEYCHAIN.")
             self.password_input.clear()
         except Exception as e:

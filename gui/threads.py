@@ -39,6 +39,8 @@ class CameraThread(QThread):
 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         while self._run_flag:
             ret, frame = self.cap.read()
@@ -214,6 +216,14 @@ class ScanProcessThread(QThread):
         except Exception as e:
             print(f"[ScanProcessThread] Unexpected error: {e}", file=sys.stderr)
             result = "failed"
+        finally:
+            if self._proc:
+                for pipe in (self._proc.stdin, self._proc.stdout, self._proc.stderr):
+                    if pipe:
+                        try:
+                            pipe.close()
+                        except:
+                            pass
 
         self._phase = "done"
         self.scan_complete.emit(result, auth_name)

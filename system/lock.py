@@ -9,17 +9,24 @@ class SystemController:
         self.last_lock_time = 0
         self.LOCK_COOLDOWN = 0
         self.last_unlock_time = 0
+        self._cached_password = None
 
     def _get_secure_password(self):
+        if self._cached_password:
+            return self._cached_password
         try:
             output = subprocess.check_output(
                 ['security', 'find-generic-password', '-a', os.getlogin(), '-s', 'VisionSightDaemon', '-w'],
                 text=True
             ).strip()
+            self._cached_password = output
             return output
         except subprocess.CalledProcessError:
             print('ERROR: Password not found in Keychain!')
             return None
+
+    def clear_cached_password(self):
+        self._cached_password = None
 
     def _is_display_on(self):
         try:
@@ -242,7 +249,7 @@ class SystemController:
             ev = Quartz.CGEventCreateKeyboardEvent(source, 56, down)
             Quartz.CGEventPost(tap, ev)
 
-        time.sleep(0.8)
+        time.sleep(0.05)
 
         # Type password
         for char in password:
@@ -250,9 +257,9 @@ class SystemController:
                 ev = Quartz.CGEventCreateKeyboardEvent(source, 0, down)
                 Quartz.CGEventKeyboardSetUnicodeString(ev, 1, char)
                 Quartz.CGEventPost(tap, ev)
-                time.sleep(0.02)
+                time.sleep(0.003)
 
-        time.sleep(0.05)
+        time.sleep(0.02)
 
         # Enter
         for down in (True, False):

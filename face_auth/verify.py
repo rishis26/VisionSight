@@ -140,26 +140,15 @@ class FaceVerifier:
                 return "failed"
 
             # Apply Configuration for Camera Setup
-            # Bypassing properties when they match default settings prevents costly AVFoundation stream renegotiations.
             if self.RESOLUTION_SETTING == "1280x720":
                 self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-            elif self.RESOLUTION_SETTING != "640x480":
-                try:
-                    w, h = map(int, self.RESOLUTION_SETTING.split('x'))
-                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-                except Exception:
-                    pass
-
-            if self.FPS_SETTING == "Low":
-                self.cap.set(cv2.CAP_PROP_FPS, 10)
-            elif self.FPS_SETTING == "High":
-                # Native high speed (usually 30 FPS), skip throttling to avoid delays
-                pass
             else:
-                # Medium (Default): run at native high frame rate (30 FPS) for faster exposure adjustment
-                pass
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+            self.cap.set(cv2.CAP_PROP_FPS, 30)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         print("👁️‍🗨️ SCANNING: Waiting for authorized face... (Press Esc to stop)")
 
@@ -170,10 +159,6 @@ class FaceVerifier:
         self._stop_requested = False
 
         # Admin-Level Hook: Catch Esc key securely across the entire OS.
-        # ONLY installed when use_esc_hook=True (i.e., non-GUI / standalone mode).
-        # In daemon scan mode (QThread), pynput is skipped because:
-        #   1. CGEventTap requires a CFRunLoop on the calling thread (QThread has none)
-        #   2. Abort is already handled via _stop_requested set by the Qt abort signal
         esc_listener = None
         if use_esc_hook:
             def on_press(key):
@@ -195,17 +180,18 @@ class FaceVerifier:
         else:
             print("ℹ️ Esc hook skipped (daemon scan mode — abort via Qt signal)")
 
-        last_display_check = time.time()
-        start_time = time.time()
-
+        frame_count = 0
         while True:
-            current_time = time.time()
+            frame_count += 1
             
-            # Check physical hardware display state strictly every 1.0s to catch idle sleep
-            if current_time - last_display_check >= 1.0:
-                if not system_controller._is_display_on():
-                    self._stop_requested = True
-                last_display_check = current_time
+            # Periodically check lock state (every 15 frames or ~0.5s) to avoid WindowServer IPC overhead on every frame
+            if frame_count % 15 == 0:
+                if not system_controller._is_macos_locked():
+                    print("🛑 ABORT: Screen unlocked externally.")
+                    self._release_camera()
+                    if esc_listener:
+                        esc_listener.stop()
+                    return "aborted"
 
             if self._stop_requested:
                 print("🛑 Scan aborted by OS/User event (Esc/Sleep).")
@@ -213,14 +199,6 @@ class FaceVerifier:
                 if esc_listener:
                     esc_listener.stop()
                 return "rejected"
-
-            # ── ABORT: screen no longer locked ──────────────────────────────
-            if not system_controller._is_macos_locked():
-                print("🛑 ABORT: Screen unlocked externally.")
-                self._release_camera()
-                if esc_listener:
-                    esc_listener.stop()
-                return "aborted"
 
             ret, frame = self.cap.read()
             if not ret:
@@ -239,22 +217,22 @@ class FaceVerifier:
                     if esc_listener:
                         esc_listener.stop()
                     return "rejected"
+                frame = cv2.flip(frame, 1)
 
             # --- Preprocessing ---
-            frame = cv2.flip(frame, 1)
+            # Single RGB conversion
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             h_orig, w_orig = frame.shape[:2]
-            scale = 280.0 / w_orig
-            small_frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
-            rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+            
+            # Downsample to 320px width for fast HOG face detection
+            scale = 320.0 / w_orig
+            rgb_small_frame = cv2.resize(rgb_frame, (320, int(h_orig * scale)))
 
             small_face_locations = face_recognition.face_locations(rgb_small_frame, model="hog")
 
             if not small_face_locations:
                 if not self.headless:
                     cv2.imshow('VisionSight - Secure Biometric Session', frame)
-                else:
-                    time.sleep(0.01)
                 continue
 
             inv_scale = 1.0 / scale

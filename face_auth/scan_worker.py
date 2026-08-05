@@ -102,6 +102,9 @@ def main():
         import cv2
         cam_idx = int(os.getenv("VISIONSIGHT_CAMERA", "0"))
         cap = cv2.VideoCapture(cam_idx, cv2.CAP_AVFOUNDATION)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FPS, 30)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # keep only the freshest frame
 
         if not cap.isOpened():
@@ -110,10 +113,8 @@ def main():
             _write(json.dumps({"result": "failed", "auth_name": ""}))
             return
 
-        # Drain the initial dark / underexposed AVFoundation startup frames
-        # so face recognition begins on a live, properly-exposed frame.
-        for _ in range(3):
-            cap.grab()
+        # Drain 1 startup frame to ensure live frame buffer
+        cap.grab()
 
     except Exception as e:
         print(f"[scan_worker] camera error: {e}", file=sys.stderr)
