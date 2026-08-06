@@ -97,7 +97,15 @@ class OSNotificationListener(NSObject):
     def screenAwake_(self, notification):
         print("\n☀️ [OS EVENT] Display Wake Detected.")
         if self._system._is_macos_locked():
-            print("🔒 System is locked — signalling main thread to start scan...")
+            idle_seconds = self._system.get_seconds_since_last_input()
+            print(f"⏱️ Time since last user physical touch: {idle_seconds:.2f}s")
+            # If the screen woke due to a push notification without any user touch,
+            # idle_seconds will typically be > 1.5s - 2.0s.
+            if idle_seconds > 2.0:
+                print("🔕 Passive wake detected (e.g. notification banner without touch) — camera stays off until user touches laptop.")
+                return
+
+            print("🔒 System is locked & physical user touch detected — starting face scan...")
             self._bridge.scan_requested.emit()
 
     def screenUnlocked_(self, notification):
@@ -266,10 +274,21 @@ class DaemonCore:
         # Drive the run-loop in slices, with a time.sleep() to prevent a busy loop
         # on background threads (which otherwise return immediately from CFRunLoopRunInMode
         # when no sources/timers are registered on that thread's run-loop, consuming 100% CPU).
+        last_touch_check = 0.0
         try:
             while not self._stop_event.is_set():
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, False)
                 time.sleep(0.1)
+
+                # If the screen is awake and locked, check for user physical touch
+                # (covers case where notification woke screen earlier and user now touches keyboard/trackpad)
+                now = time.time()
+                if now - last_touch_check > 0.3:
+                    last_touch_check = now
+                    if listener._system._is_macos_locked() and listener._system._is_display_on():
+                        idle_sec = listener._system.get_seconds_since_last_input()
+                        if idle_sec < 0.4:
+                            self.bridge.scan_requested.emit()
         except Exception as e:
             print(f"⚠️ DaemonCore run-loop exception: {e}")
         finally:

@@ -66,6 +66,21 @@ class SystemController:
             print(f'Lock State Error: {e}')
             return False
 
+    def get_seconds_since_last_input(self) -> float:
+        """
+        Returns the number of seconds elapsed since the last hardware input
+        event (keyboard keypress, trackpad touch/click, mouse movement).
+        Useful to distinguish true physical user interaction from passive
+        display wakeups caused by incoming notifications.
+        """
+        try:
+            return float(Quartz.CGEventSourceSecondsSinceLastEventType(
+                Quartz.kCGEventSourceStateCombinedSessionState,
+                Quartz.kCGAnyInputEventType
+            ))
+        except Exception:
+            return 0.0
+
     def lock_mac(self, reason='Security Trigger'):
         current_time = time.time()
         if current_time - self.last_lock_time < self.LOCK_COOLDOWN:
