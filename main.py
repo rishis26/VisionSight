@@ -22,11 +22,16 @@ from Foundation import (
     NSDistributedNotificationCenter,
     NSObject,
     NSNotificationSuspensionBehaviorDeliverImmediately,
+    NSProcessInfo,
+    NSActivityLatencyCritical,
+    NSActivityUserInitiatedAllowingIdleSystemSleep,
 )
 from AppKit import (
     NSWorkspace,
     NSWorkspaceScreensDidSleepNotification,
     NSWorkspaceScreensDidWakeNotification,
+    NSWorkspaceWillSleepNotification,
+    NSWorkspaceDidWakeNotification,
 )
 from CoreFoundation import CFRunLoopRunInMode, kCFRunLoopDefaultMode
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -132,6 +137,7 @@ class DaemonCore:
     def __init__(self):
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._activity = None
 
         # DaemonBridge QObject MUST be created on the main thread so Qt assigns
         # it to the main thread's event loop — this is what makes cross-thread
@@ -144,6 +150,17 @@ class DaemonCore:
             print("⚠️ DaemonCore: already running — ignoring start().")
             return
 
+        # Prevent macOS App Nap from freezing or throttling the background daemon
+        try:
+            options = NSActivityUserInitiatedAllowingIdleSystemSleep | NSActivityLatencyCritical
+            self._activity = NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
+                options,
+                "VisionSight Biometric Security Daemon (Active Wake & Lock Listener)"
+            )
+            print("⚡ App Nap prevention active: Real-time OS event delivery guaranteed.")
+        except Exception as e:
+            print(f"⚠️ Could not set NSProcessInfo activity: {e}")
+
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._run,
@@ -155,6 +172,13 @@ class DaemonCore:
 
     def stop(self):
         """Signal the daemon thread to stop and wait for clean exit (max 5s)."""
+        if self._activity:
+            try:
+                NSProcessInfo.processInfo().endActivity_(self._activity)
+            except Exception:
+                pass
+            self._activity = None
+
         if not self._thread or not self._thread.is_alive():
             return
 
@@ -176,13 +200,8 @@ class DaemonCore:
 
         Responsibilities:
           1. Register Cocoa notification observers
-          2. Drive the NSRunLoop via CFRunLoopRunInMode() in 0.5s slices
+          2. Drive the NSRunLoop via CFRunLoopRunInMode() in 0.1s slices
           3. Clean up observers on stop
-
-        NOT responsible for:
-          - cv2 / VideoCapture (main thread via QThread)
-          - face_recognition (main thread via QThread)
-          - Scan state / cooldown (managed by GUI class)
         """
         print("=" * 52)
         print("🚀 VISIONSIGHT DAEMON (SIGNAL-BRIDGE, THREAD MODE)")
@@ -191,13 +210,21 @@ class DaemonCore:
         # All Cocoa objects are created here, on this thread's autorelease pool
         listener = OSNotificationListener.alloc().initWithBridge_(self.bridge)
 
-        # 1. Lock / Unlock (distributed notifications)
+        # 1. Lock / Unlock (distributed notifications with DeliverImmediately)
         dist_nc = NSDistributedNotificationCenter.defaultCenter()
-        dist_nc.addObserver_selector_name_object_(
-            listener, "screenLocked:", "com.apple.screenIsLocked", None
+        dist_nc.addObserver_selector_name_object_suspensionBehavior_(
+            listener,
+            "screenLocked:",
+            "com.apple.screenIsLocked",
+            None,
+            NSNotificationSuspensionBehaviorDeliverImmediately,
         )
-        dist_nc.addObserver_selector_name_object_(
-            listener, "screenUnlocked:", "com.apple.screenIsUnlocked", None
+        dist_nc.addObserver_selector_name_object_suspensionBehavior_(
+            listener,
+            "screenUnlocked:",
+            "com.apple.screenIsUnlocked",
+            None,
+            NSNotificationSuspensionBehaviorDeliverImmediately,
         )
         dist_nc.addObserver_selector_name_object_suspensionBehavior_(
             listener,
@@ -207,7 +234,7 @@ class DaemonCore:
             NSNotificationSuspensionBehaviorDeliverImmediately,
         )
 
-        # 2. Display Sleep / Wake (workspace notifications)
+        # 2. Display Sleep / Wake AND System Deep Sleep / Lid Wake (workspace notifications)
         workspace_nc = NSWorkspace.sharedWorkspace().notificationCenter()
         workspace_nc.addObserver_selector_name_object_(
             listener,
@@ -219,6 +246,18 @@ class DaemonCore:
             listener,
             "screenAwake:",
             NSWorkspaceScreensDidWakeNotification,
+            None,
+        )
+        workspace_nc.addObserver_selector_name_object_(
+            listener,
+            "screenAsleep:",
+            NSWorkspaceWillSleepNotification,
+            None,
+        )
+        workspace_nc.addObserver_selector_name_object_(
+            listener,
+            "screenAwake:",
+            NSWorkspaceDidWakeNotification,
             None,
         )
 
