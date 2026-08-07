@@ -471,65 +471,93 @@ class VisionSightGUI(QMainWindow):
         When the display wakes and a scan is triggered, only AVFoundation
         camera init remains (~1-2 s instead of 5-8 s total).
         """
-        if self._scan_thread and self._scan_thread.isRunning():
-            return  # warmup or active scan already in progress
-        self.stop_camera()
+        self._last_scan_end = 0.0
+
         if self._scan_thread is not None:
-            self._scan_thread.deleteLater()
-        self._scan_thread = ScanProcessThread(parent=self, immediate=False)
-        self._scan_thread.scan_complete.connect(self._on_daemon_scan_complete)
-        self._scan_thread.start()
-        print("Pre-spawning scan worker (dlib loading in background, no camera yet)...")
+            if self._scan_thread.isRunning():
+                return  # already prewarming or scanning, keep it!
+            try:
+                self._scan_thread.deleteLater()
+            except Exception:
+                pass
+            self._scan_thread = None
+
+        self.stop_camera()
+        try:
+            self._scan_thread = ScanProcessThread(parent=self, immediate=False)
+            self._scan_thread.scan_complete.connect(self._on_daemon_scan_complete)
+            self._scan_thread.start()
+            print("Pre-spawning scan worker (dlib loading in background, no camera yet)...")
+        except Exception as e:
+            print(f"⚠️ Failed to start warmup thread: {e}")
 
     def _on_daemon_scan_requested(self):
-        # If already actively scanning, ignore duplicate signals
-        if (self._scan_thread
+        if (self._scan_thread is not None
                 and self._scan_thread.isRunning()
-                and self._scan_thread._phase == "scanning"):
+                and getattr(self._scan_thread, "_phase", "") == "scanning"):
             return
 
         import system.paths as paths
         from dotenv import load_dotenv
         load_dotenv(paths.get_env_path(), override=True)
-        cooldown = int(os.getenv("VISIONSIGHT_COOLDOWN", "10"))
+        cooldown = int(os.getenv("VISIONSIGHT_COOLDOWN", "5"))
         elapsed = time.time() - self._last_scan_end
-        if elapsed < cooldown:
+        if self._last_scan_end > 0.0 and elapsed < cooldown:
+            print(f"⏱️ Scan cooldown active ({elapsed:.1f}s / {cooldown}s) — skipping duplicate scan.")
             return
 
         self.stop_camera()
 
-        if self._scan_thread and self._scan_thread.isRunning():
-            # Pre-warmed subprocess exists (may still be importing or already ready).
-            # trigger_scan() uses a threading.Event so it works in both states.
+        if self._scan_thread is not None and self._scan_thread.isRunning():
             print("Triggering pre-warmed subprocess for scan...")
             self._scan_thread.trigger_scan()
         else:
-            # No warmup available — cold-start subprocess and scan immediately.
             print("Cold-starting scan subprocess (no warmup available)...")
             if self._scan_thread is not None:
-                self._scan_thread.deleteLater()
-            self._scan_thread = ScanProcessThread(parent=self, immediate=True)
-            self._scan_thread.scan_complete.connect(self._on_daemon_scan_complete)
-            self._scan_thread.start()
+                try:
+                    self._scan_thread.deleteLater()
+                except Exception:
+                    pass
+                self._scan_thread = None
+            try:
+                self._scan_thread = ScanProcessThread(parent=self, immediate=True)
+                self._scan_thread.scan_complete.connect(self._on_daemon_scan_complete)
+                self._scan_thread.start()
+            except Exception as e:
+                print(f"⚠️ Failed to start scan thread: {e}")
 
     def _on_daemon_abort_requested(self):
         if self._scan_thread and self._scan_thread.isRunning():
-            is_locked = self._system_controller._is_macos_locked()
-            
-            # If screen is unlocked, ALWAYS kill the worker to free RAM.
-            # If screen is locked (e.g. going to sleep), only abort if actively scanning.
-            # This preserves the pre-warmed worker across display sleep.
-            if not is_locked or getattr(self._scan_thread, "_phase", "") == "scanning":
-                self._scan_thread.abort()
+            try:
+                is_locked = self._system_controller._is_macos_locked()
+                if not is_locked or getattr(self._scan_thread, "_phase", "") == "scanning":
+                    self._scan_thread.abort()
+            except Exception as e:
+                print(f"⚠️ Error during scan abort: {e}")
 
     def _on_daemon_scan_complete(self, result: str, user_name: str):
+        sender = self.sender()
+        # If this signal is from an older discarded thread, just delete it and return
+        if sender is not None and sender is not self._scan_thread:
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+
         self._last_scan_end = time.time()
         if self._scan_thread is not None:
-            self._scan_thread.deleteLater()
-        self._scan_thread = None
+            try:
+                self._scan_thread.deleteLater()
+            except Exception:
+                pass
+            self._scan_thread = None
 
         if result == "success" and user_name:
-            self._system_controller.simulate_unlock(user_name)
+            try:
+                self._system_controller.simulate_unlock(user_name)
+            except Exception as e:
+                print(f"⚠️ Unlock error: {e}")
 
         if self.isVisible() and self.content_stack.currentIndex() in [0, 1]:
             self.start_camera()
