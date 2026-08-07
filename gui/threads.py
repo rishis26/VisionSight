@@ -7,10 +7,6 @@ from PyQt6.QtGui import QImage
 
 
 def _drain_stderr(proc):
-    """
-    Drain subprocess stderr line-by-line in a daemon thread.
-    Prevents the OS pipe buffer from filling up and deadlocking the subprocess.
-    """
     try:
         for raw_line in proc.stderr:
             txt = raw_line.decode(errors="replace").strip()
@@ -71,78 +67,48 @@ class CameraThread(QThread):
 
 
 class ScanProcessThread(QThread):
-    """
-    Runs face_auth/scan_worker.py as an isolated subprocess.
-
-    ┌─ Two modes ──────────────────────────────────────────────────────────────┐
-    │  immediate=False  (WARMUP)                                               │
-    │    Spawned early (display asleep + screen locked).                       │
-    │    Subprocess imports Python + dlib in background — NO camera yet.       │
-    │    trigger_scan() is called when display wakes → camera opens then.      │
-    │    Wait from display-wake to first frame: ~1-2 s (only camera init).     │
-    │                                                                          │
-    │  immediate=True   (COLD START)                                           │
-    │    Fallback when no warmup subprocess is available.                      │
-    │    Python + dlib + camera all init in sequence: ~5-8 s total.            │
-    └──────────────────────────────────────────────────────────────────────────┘
-
-    WHY SUBPROCESS:
-      dlib and cv2 are C extensions that cannot be unloaded from CPython once
-      imported. Subprocess isolation lets the OS reclaim all face-recognition
-      memory (~150 MB) when the process exits after each scan.
-
-    WHY QThread WRAPPER:
-      Non-blocking wait + signal delivery back to the Qt main thread.
-    """
-
-    scan_complete = pyqtSignal(str, str)   # (result, authenticated_username)
+    scan_complete = pyqtSignal(str, str)
 
     def __init__(self, parent=None, immediate=False):
         super().__init__(parent)
-        self._proc            = None
-        self._phase           = "prewarming"   # prewarming | ready | scanning | done
-        self._scan_event      = threading.Event()
+        self._proc = None
+        self._phase = "prewarming"
+        self._scan_event = threading.Event()
         self._abort_requested = False
 
         if immediate:
-            # Trigger scan as soon as subprocess signals ready
             self._scan_event.set()
 
-    # ── public API (called from main thread) ──────────────────────────────────
-
     def trigger_scan(self):
-        """Tell the subprocess to start scanning. Thread-safe."""
         self._scan_event.set()
 
     def abort(self):
-        """Kill the subprocess immediately, regardless of phase."""
         self._abort_requested = True
-        self._scan_event.set()          # unblock any wait()
-        if self._proc and self._proc.poll() is None:
-            self._proc.terminate()
-
-    # ── QThread entry point ───────────────────────────────────────────────────
+        self._scan_event.set()
+        if self._proc:
+            try:
+                if self._proc.poll() is None:
+                    self._proc.terminate()
+            except Exception:
+                pass
 
     def run(self):
         import subprocess
         import json as _json
         from system import paths as _paths
 
-        base_dir    = str(_paths.get_base_dir())
+        base_dir = str(_paths.get_base_dir())
         worker_path = os.path.join(base_dir, "face_auth", "scan_worker.py")
         config_line = (_json.dumps({
             "project_root": base_dir,
-            "env_path":     str(_paths.get_env_path()),
+            "env_path": str(_paths.get_env_path()),
         }) + "\n").encode()
 
-        result    = "failed"
+        result = "failed"
         auth_name = ""
 
-        # Prefer the project's own venv Python — it has all packages installed
-        # (cv2, dlib, face_recognition).  Fall back to sys.executable only if
-        # the venv doesn't exist (e.g. system-wide install).
         venv_python = os.path.join(base_dir, ".venv", "bin", "python3")
-        python_exe  = venv_python if os.path.isfile(venv_python) else sys.executable
+        python_exe = venv_python if os.path.isfile(venv_python) else sys.executable
 
         try:
             self._proc = subprocess.Popen(
@@ -152,67 +118,74 @@ class ScanProcessThread(QThread):
                 stderr=subprocess.PIPE,
             )
 
-            # Drain stderr asynchronously to prevent pipe buffer deadlock
             threading.Thread(
                 target=_drain_stderr, args=(self._proc,), daemon=True
             ).start()
 
-            # ── Phase 1: send config ──────────────────────────────────────────
-            # Worker imports Python + dlib here (slow, ~3-5 s).
-            # Camera is NOT opened yet.
-            self._proc.stdin.write(config_line)
-            self._proc.stdin.flush()
+            try:
+                self._proc.stdin.write(config_line)
+                self._proc.stdin.flush()
+            except Exception:
+                pass
 
-            # Wait for worker to finish importing ("ready\n" → dlib loaded)
-            ready_line = self._proc.stdout.readline().decode().strip()
-            if ready_line != "ready":
-                # Worker crashed during import
-                self._proc.wait()
-                self.scan_complete.emit("failed", "")
+            try:
+                ready_line = self._proc.stdout.readline().decode().strip()
+            except Exception:
+                ready_line = ""
+
+            if self._abort_requested or ready_line != "ready":
+                if self._proc and self._proc.poll() is None:
+                    try:
+                        self._proc.terminate()
+                        self._proc.wait(timeout=1.0)
+                    except Exception:
+                        pass
+                self._phase = "done"
+                self.scan_complete.emit("aborted" if self._abort_requested else "failed", "")
                 return
 
             self._phase = "ready"
-
-            # ── Phase 2: wait for scan trigger ────────────────────────────────
-            # In warmup mode: block here until trigger_scan() or abort() is called.
-            # In immediate mode: _scan_event was pre-set, so this returns instantly.
             self._scan_event.wait()
 
             if self._abort_requested:
-                # Tell worker to exit cleanly
                 try:
                     self._proc.stdin.write(b"abort\n")
                     self._proc.stdin.flush()
-                    self._proc.stdout.readline()  # drain result line
                 except Exception:
                     pass
-                if self._proc.poll() is None:
-                    self._proc.terminate()
-                self._proc.wait()
+                if self._proc and self._proc.poll() is None:
+                    try:
+                        self._proc.terminate()
+                        self._proc.wait(timeout=1.0)
+                    except Exception:
+                        pass
+                self._phase = "done"
                 self.scan_complete.emit("aborted", "")
                 return
 
-            # ── Phase 3: trigger scan ─────────────────────────────────────────
-            # Worker opens camera here (AVFoundation init: ~1-2 s).
-            # Camera LED turns on NOW, not before.
             self._phase = "scanning"
-            self._proc.stdin.write(b"scan\n")
-            self._proc.stdin.flush()
+            try:
+                self._proc.stdin.write(b"scan\n")
+                self._proc.stdin.flush()
+            except Exception:
+                pass
 
-            # Block until scan finishes and result arrives
-            result_raw = self._proc.stdout.readline().decode().strip()
-            if result_raw:
-                data      = _json.loads(result_raw)
-                result    = data.get("result", "failed")
-                auth_name = data.get("auth_name", "")
+            try:
+                result_raw = self._proc.stdout.readline().decode().strip()
+                if result_raw:
+                    data = _json.loads(result_raw)
+                    result = data.get("result", "failed")
+                    auth_name = data.get("auth_name", "")
+            except Exception as e:
+                print(f"[ScanProcessThread] Read error: {e}", file=sys.stderr)
 
-            self._proc.wait()
-
-        except subprocess.TimeoutExpired:
             if self._proc:
-                self._proc.kill()
-                self._proc.wait()
-            result = "aborted"
+                try:
+                    self._proc.wait(timeout=3.0)
+                except Exception:
+                    if self._proc.poll() is None:
+                        self._proc.kill()
+
         except Exception as e:
             print(f"[ScanProcessThread] Unexpected error: {e}", file=sys.stderr)
             result = "failed"
@@ -224,24 +197,23 @@ class ScanProcessThread(QThread):
                             pipe.close()
                         except:
                             pass
+                if self._proc.poll() is None:
+                    try:
+                        self._proc.kill()
+                    except:
+                        pass
 
         self._phase = "done"
         self.scan_complete.emit(result, auth_name)
 
 
 class DaemonScanThread(QThread):
-    """
-    Legacy in-process scan thread (kept for reference / manual GUI testing).
-    Use ScanProcessThread for daemon-mode scans — it frees dlib memory after
-    each scan whereas this class keeps dlib permanently resident.
-    """
-
     scan_complete = pyqtSignal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.system        = None
-        self.verifier      = None
+        self.system = None
+        self.verifier = None
         self._existing_cap = None
 
     def run(self):
