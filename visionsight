@@ -47,9 +47,9 @@ def launch_gui(minimized=False):
         
     cmd = [VENV_PYTHON, os.path.join(BASE_DIR, "gui", "app.py")]
     if minimized:
-        cmd.append("--tray")
+        cmd.append("--background")
         
-    print(f"Launching VisionSight {'in system tray...' if minimized else 'dashboard...'}")
+    print(f"Launching VisionSight {'in background...' if minimized else 'dashboard...'}")
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 def stop_daemon():
@@ -456,7 +456,7 @@ def main():
         print("  visionsight          Launch VisionSight dashboard GUI")
         print("  visionsight gui      Launch VisionSight dashboard GUI")
         print("  visionsight setup    Run keychain password setup wizard")
-        print("  visionsight start    Start protection (runs minimized in tray)")
+        print("  visionsight start    Start protection (runs in background)")
         print("  visionsight stop     Stop protection daemon")
         print("  visionsight status   Show process state and active PIDs")
         print("  visionsight version  Show version information")

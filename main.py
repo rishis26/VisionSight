@@ -41,41 +41,57 @@ class OSNotificationListener(NSObject):
         return self
 
     def screenLocked_(self, notification):
-        print("\n🔒 [OS EVENT] Screen Locked.")
-        self._waiting_for_touch = False
-        print("🔄 Pre-warming scan worker...")
-        self._bridge.warm_subprocess_requested.emit()
+        try:
+            print("\n🔒 [OS EVENT] Screen Locked.")
+            self._waiting_for_touch = False
+            print("🔄 Pre-warming scan worker...")
+            self._bridge.warm_subprocess_requested.emit()
+        except Exception as e:
+            print(f"⚠️ Error in screenLocked_ handler: {e}")
 
     def screenAwake_(self, notification):
-        print("\n☀️ [OS EVENT] Display Wake Detected.")
-        if self._system._is_macos_locked():
-            idle_seconds = self._system.get_seconds_since_last_input()
-            print(f"⏱️ Time since last user physical touch: {idle_seconds:.2f}s")
-            if idle_seconds > 1.5:
-                print("🔕 Passive wake detected — waiting for user touch.")
-                self._waiting_for_touch = True
-                return
+        try:
+            print("\n☀️ [OS EVENT] Display Wake Detected.")
+            if self._system._is_macos_locked():
+                idle_seconds = self._system.get_seconds_since_last_input()
+                print(f"⏱️ Time since last user physical touch: {idle_seconds:.2f}s")
+                # If the screen woke within 6 seconds of a user input (key, trackpad, lid), start scan immediately
+                if idle_seconds > 6.0:
+                    print("🔕 Passive wake detected (>6s idle) — waiting for user touch.")
+                    self._waiting_for_touch = True
+                    return
 
-            self._waiting_for_touch = False
-            print("🔒 System locked & user touch detected — starting scan...")
-            self._bridge.scan_requested.emit()
+                self._waiting_for_touch = False
+                print("🔒 System locked & user wake detected — starting scan...")
+                self._bridge.scan_requested.emit()
+        except Exception as e:
+            print(f"⚠️ Error in screenAwake_ handler: {e}")
 
     def screenUnlocked_(self, notification):
-        print("\n🔓 [OS EVENT] Screen Unlocked.")
-        self._waiting_for_touch = False
-        self._bridge.abort_requested.emit()
+        try:
+            print("\n🔓 [OS EVENT] Screen Unlocked.")
+            self._waiting_for_touch = False
+            self._bridge.abort_requested.emit()
+        except Exception as e:
+            print(f"⚠️ Error in screenUnlocked_ handler: {e}")
 
     def showGUI_(self, notification):
-        print("\n🖥️ [OS EVENT] Show GUI requested.")
-        self._bridge.show_gui_requested.emit()
+        try:
+            print("\n🖥️ [OS EVENT] Show GUI requested.")
+            self._bridge.show_gui_requested.emit()
+        except Exception as e:
+            print(f"⚠️ Error in showGUI_ handler: {e}")
 
     def screenAsleep_(self, notification):
-        print("\n💤 [OS EVENT] Display Sleep Detected.")
-        self._waiting_for_touch = False
-        self._bridge.abort_requested.emit()
-        if self._system._is_macos_locked():
-            print("🔒 Screen locked during sleep — pre-warming scan worker...")
-            self._bridge.warm_subprocess_requested.emit()
+        try:
+            print("\n💤 [OS EVENT] Display Sleep Detected.")
+            self._waiting_for_touch = False
+            self._bridge.abort_requested.emit()
+            if self._system._is_macos_locked():
+                print("🔒 Screen locked during sleep — pre-warming scan worker...")
+                self._bridge.warm_subprocess_requested.emit()
+        except Exception as e:
+            print(f"⚠️ Error in screenAsleep_ handler: {e}")
 
 
 class DaemonCore:
@@ -84,6 +100,7 @@ class DaemonCore:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._activity = None
+        self._listener = None
         self.bridge = DaemonBridge()
 
     def start(self):
@@ -116,18 +133,18 @@ class DaemonCore:
                 pass
             self._activity = None
 
-        if not self._thread or not self._thread.is_alive():
-            return
-
         self._stop_event.set()
-        self._thread.join(timeout=5.0)
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5.0)
         self._thread = None
+        self._listener = None
 
     def is_alive(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
     def _run(self):
-        listener = OSNotificationListener.alloc().initWithBridge_(self.bridge)
+        self._listener = OSNotificationListener.alloc().initWithBridge_(self.bridge)
+        listener = self._listener
 
         dist_nc = NSDistributedNotificationCenter.defaultCenter()
         dist_nc.addObserver_selector_name_object_suspensionBehavior_(
@@ -190,7 +207,7 @@ class DaemonCore:
                         last_touch_check = now
                         if listener._system._is_macos_locked():
                             idle_sec = listener._system.get_seconds_since_last_input()
-                            if idle_sec < 0.5:
+                            if idle_sec < 1.5:
                                 listener._waiting_for_touch = False
                                 print("🔒 Physical user touch detected — starting face scan...")
                                 self.bridge.scan_requested.emit()
@@ -199,8 +216,11 @@ class DaemonCore:
         except Exception as e:
             print(f"⚠️ DaemonCore run-loop error: {e}")
         finally:
-            dist_nc.removeObserver_(listener)
-            workspace_nc.removeObserver_(listener)
+            try:
+                dist_nc.removeObserver_(listener)
+                workspace_nc.removeObserver_(listener)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

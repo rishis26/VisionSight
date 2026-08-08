@@ -124,7 +124,7 @@ This does two things:
 ### Running VisionSight
 
 ```bash
-vs start      # Start protection silently in the system tray (recommended)
+vs start      # Start protection silently in the background (recommended)
 vs gui        # Open the control panel dashboard
 vs stop       # Stop the daemon
 vs status     # Check if it's running and show PID
@@ -172,13 +172,12 @@ Process: gui/app.py
 
 `cv2.VideoCapture` is only ever called from QThreads — raw Python threads cause crashes on Apple Silicon. All cross-thread communication happens via Qt signals (queued onto the main event loop, fully thread-safe, no mutexes needed).
 
-When `vs gui` is run while the app is already in the tray, it posts a `com.visionsight.show_gui` distributed notification. The running process receives it instantly (registered with `NSNotificationSuspensionBehaviorDeliverImmediately`) and raises the existing window — no duplicate process.
+When `vs gui` is run while the app is already running in the background, it posts a `com.visionsight.show_gui` distributed notification. The running process receives it instantly (registered with `NSNotificationSuspensionBehaviorDeliverImmediately`) and raises the existing window — no duplicate process.
 
 ### File structure
 
 ```
 VisionSight/
-├── visionsight          ← CLI entry point (auto re-executes in .venv)
 ├── main.py              ← Daemon core: Cocoa listeners + Qt signal bridge
 ├── gui/
 │   ├── app.py           ← Main controller (VisionSightGUI QMainWindow)
@@ -230,7 +229,7 @@ App data (outside the project, never committed):
 | Command                     | Description                                            |
 | --------------------------- | ------------------------------------------------------ |
 | `vs` / `vs gui`             | Open the dashboard (raises existing window if running) |
-| `vs start`                  | Start protection in the system tray                    |
+| `vs start`                  | Start protection in the background                     |
 | `vs stop`                   | Stop the daemon                                        |
 | `vs status`                 | Show running state and PID                             |
 | `vs register <name>`        | Register a face (terminal mode, no GUI)                |

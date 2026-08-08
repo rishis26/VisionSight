@@ -10,7 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QPushButton, QStackedWidget, 
                              QLineEdit, QFrame, QMessageBox, QSpacerItem, QSizePolicy,
-                             QStyle, QSystemTrayIcon, QMenu, QTableWidgetItem)
+                             QStyle, QTableWidgetItem)
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize, QEvent
 from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QIcon, QAction, QKeySequence, QShortcut
 from dotenv import load_dotenv, set_key
@@ -471,11 +471,11 @@ class VisionSightGUI(QMainWindow):
         When the display wakes and a scan is triggered, only AVFoundation
         camera init remains (~1-2 s instead of 5-8 s total).
         """
-        self._last_scan_end = 0.0
-
         if self._scan_thread is not None:
             if self._scan_thread.isRunning():
-                return  # already prewarming or scanning, keep it!
+                if getattr(self._scan_thread, "_phase", "") in ("prewarming", "ready", "scanning"):
+                    return
+                self._scan_thread.wait(500)
             try:
                 self._scan_thread.deleteLater()
             except Exception:
@@ -545,7 +545,10 @@ class VisionSightGUI(QMainWindow):
                 pass
             return
 
-        self._last_scan_end = time.time()
+        # Only update scan cooldown timestamp if an actual recognition attempt took place
+        if result in ("success", "failed", "rejected"):
+            self._last_scan_end = time.time()
+
         if self._scan_thread is not None:
             try:
                 self._scan_thread.deleteLater()
@@ -559,8 +562,10 @@ class VisionSightGUI(QMainWindow):
             except Exception as e:
                 print(f"⚠️ Unlock error: {e}")
 
+        # Only resume live camera preview if GUI is visible and the Mac is not locked
         if self.isVisible() and self.content_stack.currentIndex() in [0, 1]:
-            self.start_camera()
+            if not self._system_controller._is_macos_locked():
+                self.start_camera()
 
 
     def refresh_dashboard_status(self):
@@ -612,7 +617,8 @@ class VisionSightGUI(QMainWindow):
                 self.stop_camera()
             elif state in ["IDLE", "COOLDOWN"]:
                 if self.isVisible() and self.content_stack.currentIndex() in [0, 1]:
-                    self.start_camera()
+                    if not self._system_controller._is_macos_locked():
+                        self.start_camera()
         
 
         if content:
@@ -913,30 +919,15 @@ class VisionSightGUI(QMainWindow):
         self.switch_to_page(2)
 
     def closeEvent(self, event):
-        if not hasattr(self, 'tray_icon') or not self.tray_icon.isVisible():
-            print("⚠️ No system tray - performing normal quit")
-            self.quit_app()
-            return
-        
-        print("Window closing — hiding to system tray...")
+        print("Window closing — running in background...")
         self.stop_camera()
         import cv2
         cv2.destroyAllWindows()
         self.hide()
         self.set_mac_activation_policy_accessory()
-        # Pause the dashboard timer while hidden — no point polling log file
-        # every 2s when there's nothing to display. Resumes in show_and_raise().
-        if self.status_timer.isActive():
+        # Pause the dashboard timer while hidden — resumes in show_and_raise()
+        if hasattr(self, 'status_timer') and self.status_timer.isActive():
             self.status_timer.stop()
-        
-        if not hasattr(self, '_first_hide_done'):
-            self.tray_icon.showMessage(
-                "VisionSight",
-                "App is running in the background. Click the tray icon to open.",
-                QSystemTrayIcon.MessageIcon.Information,
-                2000
-            )
-            self._first_hide_done = True
         event.ignore()
     
     def installQuitFilter(self, qapp):
@@ -944,10 +935,6 @@ class VisionSightGUI(QMainWindow):
         qapp.installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        if obj is self._qapp and event.type() == QEvent.Type.Quit:
-            if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
-                self.closeEvent(type('FakeCloseEvent', (), {'ignore': lambda s: None, 'accept': lambda s: None})())
-                return True
         return super().eventFilter(obj, event)
 
     def quit_app(self):
@@ -967,9 +954,6 @@ class VisionSightGUI(QMainWindow):
             if hasattr(self, '_daemon_core') and self._daemon_core:
                 self._daemon_core.stop()
                 self._daemon_core = None
-
-            if hasattr(self, 'tray_icon'):
-                self.tray_icon.hide()
 
             print("✅ VisionSight terminated.")
         except Exception as e:
@@ -1289,8 +1273,8 @@ if __name__ == "__main__":
     window = VisionSightGUI()
     window.installQuitFilter(app)
     
-    if ("--tray" in sys.argv or "--minimized" in sys.argv) and not window.is_onboarding_needed():
-        print("📥 Starting minimized in the system tray...")
+    if ("--tray" in sys.argv or "--minimized" in sys.argv or "--background" in sys.argv) and not window.is_onboarding_needed():
+        print("📥 Starting in background...")
         window.stop_camera()
         window.set_mac_activation_policy_accessory()
     else:
