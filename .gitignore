@@ -21,3 +21,4 @@ assets/known_faces/*.pkl
 logs/
 
 .vscode/
+.opencode
