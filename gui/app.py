@@ -85,6 +85,7 @@ class VisionSightGUI(QMainWindow):
         else:
             QTimer.singleShot(100, lambda: self.switch_to_page(0))
             QTimer.singleShot(800, self.start_daemon_thread)
+        self.start_daemon_watchdog()
 
     def init_ui(self):
         main_widget = QFrame()
@@ -440,6 +441,19 @@ class VisionSightGUI(QMainWindow):
 
     def is_daemon_running(self) -> bool:
         return self._daemon_core is not None and self._daemon_core.is_alive()
+
+    def start_daemon_watchdog(self):
+        """Restart daemon thread if it dies unexpectedly."""
+        self._watchdog_timer = QTimer(self)
+        self._watchdog_timer.timeout.connect(self._check_daemon_health)
+        self._watchdog_timer.start(5000)
+
+    def _check_daemon_health(self):
+        if hasattr(self, 'daemon_toggle') and not self.daemon_toggle.isChecked():
+            return
+        if not self.is_daemon_running() and not self.is_onboarding_needed():
+            print("⚠️ Watchdog: Daemon thread died — restarting...")
+            self.start_daemon_thread()
 
     def start_daemon_thread(self):
         if self.is_daemon_running():
@@ -940,6 +954,9 @@ class VisionSightGUI(QMainWindow):
     def quit_app(self):
         print("Shutting down VisionSight completely...")
         try:
+            if hasattr(self, '_watchdog_timer') and self._watchdog_timer.isActive():
+                self._watchdog_timer.stop()
+
             if hasattr(self, 'status_timer') and self.status_timer.isActive():
                 self.status_timer.stop()
 
@@ -954,6 +971,11 @@ class VisionSightGUI(QMainWindow):
             if hasattr(self, '_daemon_core') and self._daemon_core:
                 self._daemon_core.stop()
                 self._daemon_core = None
+
+            import system.paths as paths
+            pid_file = paths.get_pid_path()
+            if os.path.exists(pid_file):
+                os.remove(pid_file)
 
             print("✅ VisionSight terminated.")
         except Exception as e:
@@ -1270,9 +1292,42 @@ if __name__ == "__main__":
     else:
         print(f"⚠️ Icon not found at: {_icon_path}")
 
+    # Record active process ID to daemon.pid
+    try:
+        with open(_paths.get_pid_path(), 'w') as _f:
+            _f.write(str(os.getpid()))
+    except Exception as _e:
+        print(f"⚠️ Warning: Could not write daemon.pid: {_e}")
+
+    # Disable macOS App Nap for the process
+    try:
+        from Foundation import NSUserDefaults
+        NSUserDefaults.standardUserDefaults().setBool_forKey_(True, "NSAppSleepDisabled")
+    except Exception:
+        pass
+
     window = VisionSightGUI()
     window.installQuitFilter(app)
-    
+
+    import signal
+    try:
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+    except Exception:
+        pass
+
+    def _handle_signal(sig, frame):
+        print(f"\n📡 Received signal {sig}, shutting down gracefully...")
+        window.quit_app()
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    # Periodic timer to allow Python interpreter to process POSIX signals while inside Qt exec loop
+    _sig_timer = QTimer()
+    _sig_timer.timeout.connect(lambda: None)
+    _sig_timer.start(500)
+
     if ("--tray" in sys.argv or "--minimized" in sys.argv or "--background" in sys.argv) and not window.is_onboarding_needed():
         print("📥 Starting in background...")
         window.stop_camera()
@@ -1282,4 +1337,4 @@ if __name__ == "__main__":
         window.show()
         
     app.exec()
-    os._exit(0)
+    window.quit_app()

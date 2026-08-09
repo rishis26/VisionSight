@@ -33,3 +33,6 @@ def get_icon_path():
     if not os.path.exists(icon) and getattr(sys, 'frozen', False):
         icon = os.path.join(sys._MEIPASS, 'assets', 'icon.png')
     return icon
+
+def get_pid_path():
+    return os.path.join(get_app_data_dir(), 'daemon.pid')
