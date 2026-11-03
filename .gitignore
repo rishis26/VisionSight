@@ -1,24 +1,17 @@
-# Development Environment
-venv/
-__pycache__/
-*.pyc
-.env
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
 
-# MacOS / OS specific
+# macOS / OS specific
 .DS_Store
 *.swp
 
-# Build Artifacts
-build/
-dist/
-*.spec
-*.app
-*.dmg
+# Build Output
+VisionSight.app/
+*.xcodeproj
+*.xcworkspace
 
-# Local Database / Cache
-assets/known_faces/*.jpg
-assets/known_faces/*.pkl
-logs/
-
+# IDE
 .vscode/
-.opencode
+.opencode/
